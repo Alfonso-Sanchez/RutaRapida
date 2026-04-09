@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data: blob:; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com; img-src 'self' data: blob: file: https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org; connect-src 'self' file: https://nominatim.openstreetmap.org https://router.project-osrm.org https://api.allorigins.win https://corsproxy.io https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; font-src 'self' data: https://cdnjs.cloudflare.com; object-src 'none'; base-uri 'self'; upgrade-insecure-requests">
+  <title>RutaRapida — Planificador de Rutas</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+
+<header>
+  <div style="flex:1">
+    <h1>⚡ RutaRapida</h1>
+    <div class="sub">Planificador inteligente de rutas</div>
+  </div>
+  <button class="btn bg bsm" id="trackBtn" onclick="toggleTracking()">
+    <i class="fas fa-play"></i> Iniciar
+  </button>
+</header>
+
+
+<div class="main">
+
+  <!-- ══ SIDEBAR ══ -->
+  <div class="sidebar">
+    <div class="tabs">
+      <button type="button" class="tab on" data-tab="setup" onclick="showTab('setup')" aria-controls="tab-setup">🏠<br>Inicio</button>
+      <button type="button" class="tab" data-tab="points" onclick="showTab('points')" aria-controls="tab-points">📍<br>Puntos</button>
+      <button type="button" class="tab" data-tab="schedule" onclick="showTab('schedule')" aria-controls="tab-schedule">🕐<br>Horario</button>
+      <button type="button" class="tab" data-tab="route" onclick="showTab('route')" aria-controls="tab-route">🗺️<br>Ruta</button>
+      <button type="button" class="tab trk-only" data-tab="tracking" id="trkTabBtn" onclick="showTab('tracking')" style="display:none;color:#dc2626;border-bottom-color:#dc2626">🔴<br>En Ruta</button>
+    </div>
+
+    <!-- TAB: SETUP -->
+    <div class="tc on" id="tab-setup">
+      <div class="card">
+        <div class="ct">📍 Ubicaciones base</div>
+        <button class="loc-btn" id="homeBtn" onclick="startSetLoc('home')">
+          <span class="licon">🏠</span>
+          <span><span class="lname" id="homeName">Establecer Casa</span><span class="lcoords" id="homeCoords"></span></span>
+        </button>
+        <button class="loc-btn" id="workBtn" onclick="startSetLoc('work')">
+          <span class="licon">💼</span>
+          <span><span class="lname" id="workName">Establecer Trabajo</span><span class="lcoords" id="workCoords"></span></span>
+        </button>
+      </div>
+
+      <div class="card">
+        <div class="ct">🔍 Buscar dirección</div>
+        <div class="row">
+          <input id="searchInput" placeholder="Buscar lugar o dirección..." aria-label="Buscar lugar o dirección"/>
+          <button class="btn bp bi" onclick="searchPlace()"><i class="fas fa-search"></i></button>
+        </div>
+        <div id="searchResults" style="display:none;border:1px solid var(--border);border-radius:7px;overflow:hidden;margin-top:5px;max-height:180px;overflow-y:auto"></div>
+      </div>
+
+      <div class="card">
+        <div class="ct">🚦 Punto de partida</div>
+        <div class="modes">
+          <div class="mbt on" id="sp-home" onclick="setStart('home')">🏠<br>Casa</div>
+          <div class="mbt" id="sp-work" onclick="setStart('work')">💼<br>Trabajo</div>
+        </div>
+      </div>
+
+      <div class="card" style="font-size:.78rem;color:var(--gray);line-height:1.7">
+        <div class="ct">ℹ️ Ayuda rápida</div>
+        • <b>Clic en el mapa</b> para fijar ubicación o añadir puntos<br>
+        • <b>Puntero azul</b> = Casa · <b>Morado</b> = Trabajo<br>
+        • <b>Naranja</b> = Clientes/paradas<br>
+        • Arrastra los marcadores para reposicionarlos
+      </div>
+    </div>
+
+    <!-- TAB: POINTS -->
+    <div class="tc" id="tab-points">
+      <div class="card">
+        <div class="ct">🔗 Añadir desde URL o coordenadas</div>
+        <div class="row">
+          <input id="urlInput" placeholder="URL o coordenadas (ej: 41.145824, 1.208178)" style="font-size:.78rem" aria-label="Pegar URL de Google Maps o Waze o coordenadas"/>
+          <button class="btn bp bi" onclick="parseUrl()"><i class="fas fa-plus"></i></button>
+        </div>
+        <div style="font-size:.7rem;color:var(--gray);margin-top:3px">
+          Compatible: maps.app.goo.gl · maps.google.com · waze.com · lat,lng
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ct">🏪 Buscar comercios</div>
+        <div class="row">
+          <input id="bizInput" placeholder="Ej: ferretería, clínica dental..." aria-label="Buscar comercios por nombre o actividad"/>
+        </div>
+        <div class="row">
+          <select id="bizType" aria-label="Tipo de comercio">
+            <option value="">Todos</option>
+            <option value="restaurant">Restaurantes</option>
+            <option value="cafe">Cafeterías</option>
+            <option value="supermarket">Supermercados</option>
+            <option value="pharmacy">Farmacias</option>
+            <option value="bank">Bancos</option>
+            <option value="hospital">Hospitales</option>
+            <option value="clinic">Clínicas</option>
+            <option value="hardware">Ferreterías</option>
+            <option value="car_repair">Talleres</option>
+            <option value="bakery">Panaderías</option>
+            <option value="convenience">Tiendas de barrio</option>
+            <option value="hairdresser">Peluquerías</option>
+            <option value="dentist">Dentistas</option>
+            <option value="veterinary">Veterinarios</option>
+            <option value="post_office">Correos</option>
+          </select>
+          <button class="btn bp bi" onclick="searchBusiness()"><i class="fas fa-store"></i></button>
+        </div>
+        <div class="row">
+          <select id="bizScope" aria-label="Alcance de búsqueda de comercios">
+            <option value="here">Aquí (mapa visible)</option>
+            <option value="any">Cualquier zona</option>
+          </select>
+        </div>
+        <div style="font-size:.7rem;color:var(--gray);margin-bottom:5px">
+          Elige si buscar en el área visible o en cualquier zona
+        </div>
+        <div id="bizResults" style="display:none;border:1px solid var(--border);border-radius:7px;overflow:hidden;max-height:190px;overflow-y:auto"></div>
+      </div>
+
+      <div class="card">
+        <div class="ct">✏️ Añadir punto manual</div>
+        <div class="row">
+          <input id="npName" placeholder="Nombre del cliente / punto" aria-label="Nombre del cliente o punto"/>
+        </div>
+        <div class="row">
+          <input id="npDwell" type="number" placeholder="Minutos de estancia" min="1" max="480" aria-label="Minutos de estancia"/>
+          <input id="npArrival" type="time" title="Hora deseada de llegada (opcional)" style="max-width:110px" aria-label="Hora deseada de llegada"/>
+        </div>
+        <div style="font-size:.7rem;color:var(--gray);margin-bottom:6px">Hora llegada deseada (opcional)</div>
+        <button class="btn bp bfull" onclick="startAddPoint()">
+          <i class="fas fa-crosshairs"></i> Clic en mapa para colocar
+        </button>
+      </div>
+
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
+          <span style="font-weight:700;font-size:.9rem">Paradas (<span id="wpCount">0</span>)</span>
+          <div style="display:flex;gap:5px">
+            <button class="btn bg bsm" onclick="optimizeOrder()" title="Optimizar orden"><i class="fas fa-wand-magic-sparkles"></i> Optimizar</button>
+            <button class="btn bd bsm" onclick="clearAll()" title="Borrar todo"><i class="fas fa-trash"></i></button>
+          </div>
+        </div>
+        <div class="wp-list" id="wpList">
+          <div class="empty"><i class="fas fa-map-pin"></i>Añade puntos de ruta</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB: SCHEDULE -->
+    <div class="tc" id="tab-schedule">
+      <div class="card">
+        <div class="ct">🗓️ Horario laboral</div>
+        <div class="sblock">
+          <div class="sdot" style="background:var(--blue)"></div>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:.83rem">Mañana</div>
+            <div style="display:flex;align-items:center;gap:5px;margin-top:3px">
+              <input type="time" id="mStart" value="08:00" style="flex:1;padding:4px 6px;font-size:.8rem"/>
+              <span style="color:var(--gray)">—</span>
+              <input type="time" id="mEnd" value="13:30" style="flex:1;padding:4px 6px;font-size:.8rem"/>
+            </div>
+          </div>
+        </div>
+        <div class="sblock">
+          <div class="sdot" style="background:var(--purple)"></div>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:.83rem">Tarde</div>
+            <div style="display:flex;align-items:center;gap:5px;margin-top:3px">
+              <input type="time" id="aStart" value="16:00" style="flex:1;padding:4px 6px;font-size:.8rem"/>
+              <span style="color:var(--gray)">—</span>
+              <input type="time" id="aEnd" value="18:30" style="flex:1;padding:4px 6px;font-size:.8rem"/>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ct">⚙️ Modo de jornada</div>
+        <div class="modes">
+          <div class="mbt on" id="md-auto" onclick="setMode('auto')">🪄<br>Auto</div>
+          <div class="mbt" id="md-split" onclick="setMode('split')">⏸️<br>Partido</div>
+          <div class="mbt" id="md-cont" onclick="setMode('cont')">▶️<br>Seguido</div>
+        </div>
+        <div id="modeRec" style="display:none;margin-top:9px;font-size:.78rem;padding:8px;background:var(--bg);border-radius:6px;line-height:1.5"></div>
+      </div>
+
+      <div class="card" id="contCard" style="display:none">
+        <div class="ct">▶️ Jornada continua</div>
+        <label>Hora de inicio</label>
+        <input type="time" id="cStart" value="08:00"/>
+        <label>Horas de trabajo</label>
+        <input type="number" id="cHours" value="8" min="4" max="12"/>
+      </div>
+
+      <button class="btn bs bfull" id="calcBtn" onclick="calcRoute()">
+        <i class="fas fa-route"></i> Calcular ruta óptima
+      </button>
+    </div>
+
+    <!-- TAB: TRACKING -->
+    <div class="tc" id="tab-tracking">
+
+      <!-- Progress header -->
+      <div class="card" style="background:linear-gradient(135deg,#1e293b,#374151);color:#fff;border:none">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-weight:700;font-size:.9rem" id="trkProgText">0 / 0 paradas</span>
+          <span id="trkDelayBadge" style="font-size:.75rem;font-weight:700;padding:3px 10px;border-radius:10px;background:#374151">—</span>
+        </div>
+        <div style="height:6px;background:rgba(255,255,255,.15);border-radius:3px;overflow:hidden">
+          <div id="trkProgBar" style="height:100%;background:#22c55e;border-radius:3px;transition:width .4s;width:0%"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:.72rem;opacity:.75;margin-top:5px">
+          <span>Inicio: <b id="trkStartTime">—</b></span>
+          <span>Fin est.: <b id="trkEndTime">—</b></span>
+        </div>
+      </div>
+
+      <!-- Current waypoint card -->
+      <div class="card" id="trkCurrentCard" style="border:2px solid var(--blue)">
+        <div class="ct" id="trkCurrentLabel" style="color:var(--blue)">📍 PRÓXIMA PARADA</div>
+        <div id="trkCurrentName" style="font-size:1.15rem;font-weight:800;margin-bottom:3px;line-height:1.2">—</div>
+        <div id="trkCurrentAddr" style="font-size:.78rem;color:var(--gray);margin-bottom:10px">—</div>
+
+        <!-- Planned vs estimated times -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px">
+          <div style="background:var(--bg);border-radius:6px;padding:6px;text-align:center">
+            <div style="font-size:.62rem;color:var(--gray);font-weight:600;text-transform:uppercase">Planificado</div>
+            <div style="font-weight:700;font-size:.9rem" id="trkPlanned">—</div>
+          </div>
+          <div style="background:var(--bg);border-radius:6px;padding:6px;text-align:center">
+            <div style="font-size:.62rem;color:var(--gray);font-weight:600;text-transform:uppercase">Estimado</div>
+            <div style="font-weight:700;font-size:.9rem;color:var(--blue)" id="trkEstimated">—</div>
+          </div>
+          <div style="background:var(--bg);border-radius:6px;padding:6px;text-align:center">
+            <div style="font-size:.62rem;color:var(--gray);font-weight:600;text-transform:uppercase">Estancia</div>
+            <div style="font-weight:700;font-size:.9rem" id="trkDwell">— min</div>
+          </div>
+        </div>
+
+        <!-- Navigation buttons -->
+        <div style="display:flex;gap:6px;margin-bottom:10px">
+          <a id="trkMapsLink" href="#" target="_blank" rel="noopener"
+            style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;
+              padding:9px;background:#2563eb;color:#fff;border-radius:7px;
+              font-size:.82rem;font-weight:600;text-decoration:none">
+            🗺️ Maps
+          </a>
+          <a id="trkWazeLink" href="#" target="_blank" rel="noopener"
+            style="flex:1;display:flex;align-items:center;justify-content:center;gap:5px;
+              padding:9px;background:#33ccff;color:#fff;border-radius:7px;
+              font-size:.82rem;font-weight:600;text-decoration:none">
+            🚗 Waze
+          </a>
+        </div>
+
+        <!-- Timer (visible when at client) -->
+        <div id="trkTimerBlock" style="display:none;text-align:center;padding:12px 8px;
+          background:#f0fdf4;border-radius:8px;margin-bottom:10px;border:1px solid #bbf7d0">
+          <div style="font-size:.7rem;color:#15803d;font-weight:700;letter-spacing:.05em">⏱ TIEMPO EN CLIENTE</div>
+          <div style="font-size:2.2rem;font-weight:800;color:#15803d;letter-spacing:-.03em;font-variant-numeric:tabular-nums" id="trkTimer">00:00</div>
+          <div style="font-size:.72rem;color:#6b7280;margin-top:2px" id="trkTimerSub"></div>
+        </div>
+
+        <!-- Action buttons -->
+        <button class="btn bs bfull" id="trkArrivedBtn" onclick="trkArrived()" style="display:none;margin-bottom:6px;padding:13px;font-size:.95rem">
+          ✅ He llegado al cliente
+        </button>
+        <button class="btn bd bfull" id="trkLeftBtn" onclick="trkLeft()" style="display:none;padding:13px;font-size:.95rem">
+          🚪 He salido — siguiente parada
+        </button>
+      </div>
+
+      <!-- Itinerary list -->
+      <div class="card">
+        <div class="ct">📋 Itinerario del día</div>
+        <div id="trkItinerary"></div>
+      </div>
+
+      <button class="btn bg bfull" onclick="stopTracking()" style="margin-bottom:4px">
+        <i class="fas fa-stop"></i> Finalizar jornada
+      </button>
+    </div>
+
+    <!-- TAB: ROUTE -->
+    <div class="tc" id="tab-route">
+      <div class="empty" id="routeEmpty" style="display:block">
+        <i class="fas fa-route" style="font-size:3rem"></i>Configura los puntos y calcula la ruta
+      </div>
+      <div id="routeResults" style="display:none;display:flex;flex-direction:column;gap:9px">
+
+        <div class="card">
+          <div class="ct">📊 Resumen</div>
+          <div class="sumgrid">
+            <div class="sumitem"><div class="sumval" id="sDist">—</div><div class="sumlbl">km totales</div></div>
+            <div class="sumitem"><div class="sumval" id="sTravel">—</div><div class="sumlbl">En carretera</div></div>
+            <div class="sumitem"><div class="sumval" id="sDwell">—</div><div class="sumlbl">Con clientes</div></div>
+            <div class="sumitem"><div class="sumval" id="sTotal">—</div><div class="sumlbl">Total jornada</div></div>
+          </div>
+          <div style="margin-top:9px;display:flex;gap:8px;align-items:center;font-size:.82rem">
+            <span style="color:var(--gray)">Salida:</span>
+            <b id="sStart">—</b>
+            <span style="color:var(--gray);margin-left:auto">Fin:</span>
+            <b id="sEnd" style="color:var(--blue)">—</b>
+          </div>
+          <div class="pbar"><div class="pfill" id="sProg" style="width:0%"></div></div>
+        </div>
+
+        <div class="card">
+          <div class="ct">📋 Itinerario</div>
+          <div id="routeList"></div>
+        </div>
+
+        <button class="btn bp bfull" onclick="showTab('schedule')">
+          <i class="fas fa-redo"></i> Recalcular
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ MAP ══ -->
+  <div id="map"></div>
+</div>
+
+<!-- ══ MODAL: Edit/Add point ══ -->
+<div class="overlay" id="editModal" style="display:none" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <h3 id="editTitle">✏️ Editar punto</h3>
+    <input type="hidden" id="eId"/>
+    <label>Nombre del cliente / punto</label>
+    <input id="eName" placeholder="Ej: Empresa García"/>
+    <label>Tiempo de estancia (minutos)</label>
+    <input id="eDwell" type="number" min="1" max="480" placeholder="30"/>
+    <label>Hora deseada de llegada <span style="font-weight:400;color:var(--gray)">(opcional)</span></label>
+    <input id="eArrival" type="time"/>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn bp" style="flex:1" onclick="saveEdit()"><i class="fas fa-save"></i> Guardar</button>
+      <button class="btn bg" onclick="closeModal()">Cancelar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MODAL: Set base location ══ -->
+<div class="overlay" id="locModal" style="display:none" onclick="if(event.target===this)closeLocModal()">
+  <div class="modal">
+    <h3 id="locTitle">📍 Establecer ubicación</h3>
+    <div class="row">
+      <input id="locInput" placeholder="Buscar dirección..." aria-label="Buscar dirección para ubicación base"/>
+      <button class="btn bp bi" onclick="searchLoc()"><i class="fas fa-search"></i></button>
+    </div>
+    <div id="locResults" style="border:1px solid var(--border);border-radius:7px;overflow:hidden;margin-top:6px;max-height:200px;overflow-y:auto;display:none"></div>
+    <div style="margin-top:10px;font-size:.78rem;color:var(--gray);text-align:center;padding:8px;background:var(--bg);border-radius:6px">
+      O cierra y haz <b>clic en el mapa</b> para fijar la posición
+    </div>
+    <button class="btn bg bfull" style="margin-top:9px" onclick="closeLocModal()">Cancelar</button>
+  </div>
+</div>
+
+<link rel="stylesheet" crossorigin="anonymous" referrerpolicy="no-referrer" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+<script defer crossorigin="anonymous" referrerpolicy="no-referrer" src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script defer crossorigin="anonymous" referrerpolicy="no-referrer" src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+<script defer src="app.js"></script>
+</body>
+</html>
