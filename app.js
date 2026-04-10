@@ -7,6 +7,7 @@ const S = {
   waypoints: [],
   schedMode: 'auto',
   route: null,
+  routeData: null,
   trk: {
     active: false, delay: 0, _prevDelay: 0,
     startedAt: null, currentIdx: 0,
@@ -69,12 +70,24 @@ function onMapClick(e) {
     const name = document.getElementById('npName').value.trim() || `Cliente ${S.nid}`;
     const dwell = parseDwell(document.getElementById('npDwell').value, 30);
     const arr = document.getElementById('npArrival').value || null;
-    addWP({ lat, lng, name, dwell, desiredArrival: arr });
+    const openTime = parseTimeOrNull(document.getElementById('npOpen').value);
+    const closeTime = parseTimeOrNull(document.getElementById('npClose').value);
+    const openTime2 = parseTimeOrNull(document.getElementById('npOpen2').value);
+    const closeTime2 = parseTimeOrNull(document.getElementById('npClose2').value);
+    if ((openTime && closeTime && t2m(openTime) >= t2m(closeTime)) || (openTime2 && closeTime2 && t2m(openTime2) >= t2m(closeTime2))) {
+      notify('El horario del cliente es inválido', 'error');
+      return;
+    }
+    addWP({ lat, lng, name, dwell, desiredArrival: arr, openTime, closeTime, openTime2, closeTime2 });
     S.addingPt = false;
     setCursor('');
     document.getElementById('npName').value = '';
     document.getElementById('npDwell').value = '';
     document.getElementById('npArrival').value = '';
+    document.getElementById('npOpen').value = '';
+    document.getElementById('npClose').value = '';
+    document.getElementById('npOpen2').value = '';
+    document.getElementById('npClose2').value = '';
     notify('Punto añadido: ' + name, 'success');
     return;
   }
@@ -97,6 +110,76 @@ function parseDwell(raw, fallback = 30) {
   return Math.min(480, Math.max(1, n));
 }
 
+function parseTimeOrNull(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const t = raw.trim();
+  if (!/^\d{2}:\d{2}$/.test(t)) return null;
+  return t;
+}
+
+function fmtHM(mins) {
+  const total = Math.max(0, Math.round(Number(mins) || 0));
+  const h = String(Math.floor(total / 60)).padStart(2, '0');
+  const m = String(total % 60).padStart(2, '0');
+  return `${h}h:${m}m`;
+}
+
+function parseOpeningHoursRange(raw) {
+  if (!raw || typeof raw !== 'string') {
+    return { openTime: null, closeTime: null, openTime2: null, closeTime2: null, openingHoursRaw: null };
+  }
+  const matches = [...raw.matchAll(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/g)].slice(0, 2);
+  if (!matches.length) {
+    return { openTime: null, closeTime: null, openTime2: null, closeTime2: null, openingHoursRaw: raw };
+  }
+  const first = matches[0];
+  const second = matches[1];
+  return {
+    openTime: first?.[1]?.padStart(5, '0') || null,
+    closeTime: first?.[2]?.padStart(5, '0') || null,
+    openTime2: second?.[1]?.padStart(5, '0') || null,
+    closeTime2: second?.[2]?.padStart(5, '0') || null,
+    openingHoursRaw: raw
+  };
+}
+
+function getCustomerWindows(wp) {
+  const windows = [];
+  if (wp.openTime && wp.closeTime) {
+    windows.push({ start: t2m(wp.openTime), end: t2m(wp.closeTime), label: `${wp.openTime}-${wp.closeTime}` });
+  }
+  if (wp.openTime2 && wp.closeTime2) {
+    windows.push({ start: t2m(wp.openTime2), end: t2m(wp.closeTime2), label: `${wp.openTime2}-${wp.closeTime2}` });
+  }
+  return windows.filter(w => Number.isFinite(w.start) && Number.isFinite(w.end) && w.start < w.end).sort((a, b) => a.start - b.start);
+}
+
+function formatCustomerHours(wp) {
+  const parts = [];
+  if (wp.openTime && wp.closeTime) parts.push(`${wp.openTime}-${wp.closeTime}`);
+  if (wp.openTime2 && wp.closeTime2) parts.push(`${wp.openTime2}-${wp.closeTime2}`);
+  return parts.join(' · ');
+}
+
+function adjustArrivalToCustomerHours(arrival, dwell, wp) {
+  const windows = getCustomerWindows(wp);
+  if (!windows.length) return { arrival, conflict: null };
+
+  for (const w of windows) {
+    if (arrival <= w.start && (w.start + dwell) <= w.end) {
+      return { arrival: w.start, conflict: null };
+    }
+    if (arrival >= w.start && arrival < w.end && (arrival + dwell) <= w.end) {
+      return { arrival, conflict: null };
+    }
+  }
+
+  const nextWindow = windows.find(w => arrival < w.start && (w.start + dwell) <= w.end);
+  if (nextWindow) return { arrival: nextWindow.start, conflict: null };
+
+  return { arrival, conflict: `Fuera de horario (${windows.map(w => w.label).join(' · ')})` };
+}
+
 function normalizeCache() {
   const now = Date.now();
   const keys = Object.keys(S.searchCache);
@@ -113,6 +196,13 @@ function normalizeCache() {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function invalidateRoute() {
+  S.route = null;
+  S.routeData = null;
+  const trackBtn = document.getElementById('trackBtn');
+  if (trackBtn) trackBtn.style.display = 'none';
 }
 
 async function fetchJsonWithRetry(url, opts = {}, retries = 2) {
@@ -176,6 +266,7 @@ function closeLocModal() {
 function setBaseLoc(type, lat, lng, name) {
   const obj = { lat, lng, name: name || `${lat.toFixed(5)}, ${lng.toFixed(5)}` };
   if (type === 'home') S.home = obj; else S.work = obj;
+  invalidateRoute();
   updateBaseUI(type);
   setMk(type, lat, lng, type === 'home' ? '🏠' : '💼', type === 'home' ? '#2563eb' : '#7c3aed');
   S.map.setView([lat, lng], 14);
@@ -192,6 +283,7 @@ function updateBaseUI(type) {
 
 function setStart(type) {
   S.startPt = type;
+  invalidateRoute();
   document.getElementById('sp-home').classList.toggle('on', type === 'home');
   document.getElementById('sp-work').classList.toggle('on', type === 'work');
   saveStorage();
@@ -300,9 +392,11 @@ function addWPMarker(wp) {
   const popContent = () => `
     <div style="min-width:160px;font-size:.82rem">
       <b>${esc(wp.name)}</b><br>
-      <span style="color:#6b7280">Estancia: ${wp.dwell} min</span>
+      <span style="color:#6b7280">Estancia: ${fmtHM(wp.dwell)}</span>
       ${wp.desiredArrival ? `<br><span style="color:#2563eb">Llegar: ${esc(wp.desiredArrival)}</span>` : ''}
+      ${formatCustomerHours(wp) ? `<br><span style="color:#0f766e">Horario: ${esc(formatCustomerHours(wp))}</span>` : ''}
       ${wp.plannedArrival ? `<br><span style="color:#374151">Previsto: ${esc(wp.plannedArrival)} – ${esc(wp.plannedDeparture)}</span>` : ''}
+      ${wp.scheduleConflict ? `<br><span style="color:#b45309">${esc(wp.scheduleConflict)}</span>` : ''}
       <div style="margin-top:6px;display:flex;gap:4px">
         <button onclick="editWP(${wp.id})" style="padding:3px 8px;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.72rem">Editar</button>
       </div>
@@ -313,6 +407,7 @@ function addWPMarker(wp) {
   m.on('dragend', ev => {
     wp.lat = ev.target.getLatLng().lat;
     wp.lng = ev.target.getLatLng().lng;
+    invalidateRoute();
     saveStorage();
   });
 }
@@ -428,7 +523,7 @@ async function nominatimBiz(q, limit = 10, opts = {}) {
     const zoomPart = Number.isFinite(opts.zoom) ? `&zoom=${opts.zoom}` : '';
     const boundedPart = opts.bounded ? '&bounded=1' : '';
     const viewboxPart = opts.useViewbox ? `&viewbox=${encodeURIComponent(viewbox)}` : '';
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=${limit}${boundedPart}${viewboxPart}&addressdetails=1${centerBoost}${zoomPart}`;
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=${limit}${boundedPart}${viewboxPart}&addressdetails=1&extratags=1${centerBoost}${zoomPart}`;
     const d = await fetchJsonWithRetry(
       url,
       { headers: { 'Accept-Language': 'es', 'User-Agent': 'RutaRapida/1.0' } }
@@ -500,6 +595,10 @@ function addSearchResultAsPoint(lat, lng, name) {
   document.getElementById('eName').value = S.pendingCoords.name;
   document.getElementById('eDwell').value = '30';
   document.getElementById('eArrival').value = '';
+  document.getElementById('eOpen').value = S.pendingCoords.openTime || '';
+  document.getElementById('eClose').value = S.pendingCoords.closeTime || '';
+  document.getElementById('eOpen2').value = S.pendingCoords.openTime2 || '';
+  document.getElementById('eClose2').value = S.pendingCoords.closeTime2 || '';
   document.getElementById('editModal').style.display = 'flex';
   showTab('points');
 }
@@ -576,6 +675,7 @@ async function searchBusiness() {
   box.innerHTML = sliced.map((r, i) => {
     const main = esc(r.display_name.split(',')[0]);
     const sub = esc(r.display_name.split(',').slice(1, 3).join(',').trim());
+    const hours = parseOpeningHoursRange(r?.extratags?.opening_hours || '');
     return `<div class="sres-item" onclick="pickBusiness(${r.lat},${r.lon},${i})"
       onmouseenter="highlightSearchMk(${i})" onmouseleave="unhighlightSearchMk(${i})">
       <span style="display:inline-flex;align-items:center;justify-content:center;
@@ -583,7 +683,7 @@ async function searchBusiness() {
         font-size:10px;font-weight:800;margin-right:6px;flex-shrink:0">${i+1}</span>
       <span>
         <div class="sres-main">${main}</div>
-        <div class="sres-sub">${sub}</div>
+        <div class="sres-sub">${sub}${hours.openTime && hours.closeTime ? ` · ${esc(hours.openTime)}-${esc(hours.closeTime)}` : ''}</div>
       </span>
     </div>`;
   }).join('');
@@ -598,12 +698,32 @@ function pickBusiness(lat, lng, i) {
 }
 
 function addBizAsPoint(lat, lng, name) {
-  S.pendingCoords = { lat: parseFloat(lat), lng: parseFloat(lng), name: String(name || 'Comercio') };
+  const box = document.getElementById('bizResults');
+  const item = (box?._results || []).find(r =>
+    Number.parseFloat(r.lat) === Number.parseFloat(lat) &&
+    Number.parseFloat(r.lon) === Number.parseFloat(lng) &&
+    (r.display_name?.split(',')[0] || 'Comercio') === String(name || 'Comercio')
+  );
+  const hours = parseOpeningHoursRange(item?.extratags?.opening_hours || '');
+  S.pendingCoords = {
+    lat: parseFloat(lat),
+    lng: parseFloat(lng),
+    name: String(name || 'Comercio'),
+    openTime: hours.openTime,
+    closeTime: hours.closeTime,
+    openTime2: hours.openTime2,
+    closeTime2: hours.closeTime2,
+    openingHoursRaw: hours.openingHoursRaw
+  };
   document.getElementById('eId').value = '__new__';
   document.getElementById('editTitle').textContent = '📍 Nuevo punto';
   document.getElementById('eName').value = S.pendingCoords.name;
   document.getElementById('eDwell').value = '30';
   document.getElementById('eArrival').value = '';
+  document.getElementById('eOpen').value = S.pendingCoords.openTime || '';
+  document.getElementById('eClose').value = S.pendingCoords.closeTime || '';
+  document.getElementById('eOpen2').value = S.pendingCoords.openTime2 || '';
+  document.getElementById('eClose2').value = S.pendingCoords.closeTime2 || '';
   document.getElementById('editModal').style.display = 'flex';
 }
 
@@ -834,15 +954,22 @@ async function resolveShort(url) {
 // ═══════════════════════════════════════════════
 //  WAYPOINT MANAGEMENT
 // ═══════════════════════════════════════════════
-function addWP({ lat, lng, name, dwell, desiredArrival }) {
+function addWP({ lat, lng, name, dwell, desiredArrival, openTime, closeTime, openTime2, closeTime2, openingHoursRaw }) {
   const wp = {
     id: S.nid++, lat, lng,
     name: name || `Cliente ${S.nid}`,
     dwell: parseDwell(dwell, 30),
     desiredArrival: desiredArrival || null,
-    plannedArrival: null, plannedDeparture: null, actualDelay: null
+    openTime: parseTimeOrNull(openTime),
+    closeTime: parseTimeOrNull(closeTime),
+    openTime2: parseTimeOrNull(openTime2),
+    closeTime2: parseTimeOrNull(closeTime2),
+    openingHoursRaw: openingHoursRaw || null,
+    plannedArrival: null, plannedDeparture: null, actualDelay: null,
+    scheduleConflict: null
   };
   S.waypoints.push(wp);
+  invalidateRoute();
   addWPMarker(wp);
   renderWPs();
   saveStorage();
@@ -867,6 +994,10 @@ function editWP(id) {
   document.getElementById('eName').value = wp.name;
   document.getElementById('eDwell').value = wp.dwell;
   document.getElementById('eArrival').value = wp.desiredArrival || '';
+  document.getElementById('eOpen').value = wp.openTime || '';
+  document.getElementById('eClose').value = wp.closeTime || '';
+  document.getElementById('eOpen2').value = wp.openTime2 || '';
+  document.getElementById('eClose2').value = wp.closeTime2 || '';
   document.getElementById('editModal').style.display = 'flex';
 }
 
@@ -875,13 +1006,35 @@ function saveEdit() {
   const name = document.getElementById('eName').value.trim() || 'Cliente';
   const dwell = parseDwell(document.getElementById('eDwell').value, 30);
   const arr = document.getElementById('eArrival').value || null;
+  const openTime = parseTimeOrNull(document.getElementById('eOpen').value);
+  const closeTime = parseTimeOrNull(document.getElementById('eClose').value);
+  const openTime2 = parseTimeOrNull(document.getElementById('eOpen2').value);
+  const closeTime2 = parseTimeOrNull(document.getElementById('eClose2').value);
+
+  if ((openTime && closeTime && t2m(openTime) >= t2m(closeTime)) || (openTime2 && closeTime2 && t2m(openTime2) >= t2m(closeTime2))) {
+    notify('El horario del cliente es inválido', 'error');
+    return;
+  }
 
   if (id === '__new__' && S.pendingCoords) {
-    addWP({ ...S.pendingCoords, name, dwell, desiredArrival: arr });
+    addWP({ ...S.pendingCoords, name, dwell, desiredArrival: arr, openTime, closeTime, openTime2, closeTime2 });
     S.pendingCoords = null;
   } else {
     const wp = S.waypoints.find(w => w.id === +id);
-    if (wp) { wp.name = name; wp.dwell = dwell; wp.desiredArrival = arr; addWPMarker(wp); renderWPs(); saveStorage(); }
+    if (wp) {
+      wp.name = name;
+      wp.dwell = dwell;
+      wp.desiredArrival = arr;
+      wp.openTime = openTime;
+      wp.closeTime = closeTime;
+      wp.openTime2 = openTime2;
+      wp.closeTime2 = closeTime2;
+      wp.scheduleConflict = null;
+      invalidateRoute();
+      addWPMarker(wp);
+      renderWPs();
+      saveStorage();
+    }
   }
   closeModal();
 }
@@ -893,6 +1046,7 @@ function closeModal() {
 
 function removeWP(id) {
   S.waypoints = S.waypoints.filter(w => w.id !== id);
+  invalidateRoute();
   rmMk('wp_' + id);
   renderWPs();
   saveStorage();
@@ -935,6 +1089,9 @@ function renderWPs() {
     }
     const planned = wp.plannedArrival ? `<span class="badge bb">${esc(wp.plannedArrival)}</span>` : '';
     const fixed   = wp.desiredArrival ? `<span class="badge" style="background:#fef9c3;color:#854d0e">🎯 ${esc(wp.desiredArrival)}</span>` : '';
+    const hoursText = formatCustomerHours(wp);
+    const hours   = hoursText ? `<span class="badge" style="background:#ecfeff;color:#155e75">🕘 ${esc(hoursText)}</span>` : '';
+    const conflict = wp.scheduleConflict ? `<span class="wp-status s-late">${esc(wp.scheduleConflict)}</span>` : '';
     const numBg   = done ? '#6b7280' : trkSt === 'at_client' ? '#16a34a' : '#ea580c';
 
     return `<div class="wp-item ${done ? 'done' : ''}" data-id="${wp.id}">
@@ -942,10 +1099,10 @@ function renderWPs() {
       <div style="flex:1;min-width:0">
         <div class="wp-name" style="${done ? 'text-decoration:line-through;color:#6b7280' : ''}">${esc(wp.name)}</div>
         <div class="wp-meta">
-          <span>⏱ ${wp.dwell}min</span>
-          ${fixed}${planned}
+          <span>⏱ ${fmtHM(wp.dwell)}</span>
+          ${fixed}${planned}${hours}
         </div>
-        ${status}
+        ${status}${conflict}
       </div>
       <div class="wp-acts">
         ${!S.trk.active ? `<button class="btn bg bi bsm" onclick="editWP(${wp.id})" title="Editar"><i class="fas fa-edit"></i></button>
@@ -1017,7 +1174,28 @@ function m2t(m) {
   const n = ((Math.round(m) % day) + day) % day;
   return `${String(Math.floor(n / 60)).padStart(2,'0')}:${String(n % 60).padStart(2,'0')}`;
 }
-function fmtDur(m) { if (m < 60) return m+'min'; const h=Math.floor(m/60),r=m%60; return r ? `${h}h ${r}min` : `${h}h`; }
+function fmtDur(m) { return fmtHM(m); }
+
+function getEffectiveStartMin(sc, mode, now = nowMin()) {
+  if (mode === 'cont') return Math.max(sc.cS, now);
+
+  const baseStart = sc.mS;
+  if (now <= baseStart) return baseStart;
+  if (now < sc.mE) return now;
+  if (now < sc.aS) return sc.aS;
+  return Math.max(sc.aS, now);
+}
+
+function getRemainingAvailability(sc, mode, now = nowMin()) {
+  if (mode === 'cont') {
+    const contEnd = sc.cS + (sc.cH * 60);
+    return Math.max(0, contEnd - Math.max(now, sc.cS));
+  }
+
+  const morningLeft = now < sc.mE ? Math.max(0, sc.mE - Math.max(now, sc.mS)) : 0;
+  const afternoonLeft = now < sc.aE ? Math.max(0, sc.aE - Math.max(now, sc.aS)) : 0;
+  return morningLeft + afternoonLeft;
+}
 
 // ═══════════════════════════════════════════════
 //  ROUTE OPTIMIZATION
@@ -1131,14 +1309,9 @@ function twoOptMatrix(order, originToPts, matrixPts) {
   return best;
 }
 
-async function optimizeOrder() {
-  if (S.waypoints.length < 2) { notify('Necesitas al menos 2 puntos', 'error'); return; }
-  const origin = S.startPt==='home' ? S.home : S.work;
-  if (!origin) { notify('Establece el punto de partida primero', 'error'); return; }
-
-  notify('Optimizando orden…');
-  const fixed = S.waypoints.filter(w => w.desiredArrival).sort((a,b) => a.desiredArrival.localeCompare(b.desiredArrival));
-  const flex = S.waypoints.filter(w => !w.desiredArrival);
+async function getOptimizedWaypoints(origin, waypoints) {
+  const fixed = waypoints.filter(w => w.desiredArrival).sort((a, b) => a.desiredArrival.localeCompare(b.desiredArrival));
+  const flex = waypoints.filter(w => !w.desiredArrival);
 
   let optimized = flex;
   if (flex.length > 1) {
@@ -1156,22 +1329,30 @@ async function optimizeOrder() {
     }
   }
 
-  // Interleave fixed (by time) with flexible
-  if (fixed.length) {
-    const merged = [];
-    let fi=0, li=0;
-    while (fi<fixed.length || li<optimized.length) {
-      if (li<optimized.length && (fi>=fixed.length || li <= Math.floor(fi*optimized.length/Math.max(fixed.length,1)))) {
-        merged.push(optimized[li++]);
-      } else if (fi<fixed.length) {
-        merged.push(fixed[fi++]);
-      }
-    }
-    S.waypoints = merged;
-  } else {
-    S.waypoints = optimized;
-  }
+  if (!fixed.length) return optimized;
 
+  const merged = [];
+  let fi = 0;
+  let li = 0;
+  while (fi < fixed.length || li < optimized.length) {
+    if (li < optimized.length && (fi >= fixed.length || li <= Math.floor(fi * optimized.length / Math.max(fixed.length, 1)))) {
+      merged.push(optimized[li++]);
+    } else if (fi < fixed.length) {
+      merged.push(fixed[fi++]);
+    }
+  }
+  return merged;
+}
+
+async function optimizeOrder() {
+  if (S.waypoints.length < 2) { notify('Necesitas al menos 2 puntos', 'error'); return; }
+  const origin = S.startPt==='home' ? S.home : S.work;
+  if (!origin) { notify('Establece el punto de partida primero', 'error'); return; }
+
+  notify('Optimizando orden…');
+  S.waypoints = await getOptimizedWaypoints(origin, S.waypoints);
+
+  invalidateRoute();
   renderWPs();
   saveStorage();
   notify('¡Orden optimizado!', 'success');
@@ -1211,14 +1392,18 @@ async function calcRoute() {
       showTab('schedule');
       return;
     }
-    const allPts = [origin, ...S.waypoints, origin];
+    const optimizedWaypoints = await getOptimizedWaypoints(origin, S.waypoints);
+    S.waypoints = optimizedWaypoints;
+    renderWPs();
+    const allPts = [origin, ...optimizedWaypoints, origin];
 
     notify('Obteniendo ruta real (OSRM)…');
     const osrm = await getOsrmRoute(allPts);
     if (!osrm) notify('Sin conexión a OSRM. Usando estimación lineal.', 'error');
 
-    const result = buildSchedule(S.waypoints, origin, sc, osrm);
+    const result = buildSchedule(optimizedWaypoints, origin, sc, osrm);
     S.route = result;
+    S.routeData = { origin, osrm };
 
     renderRoute(result);
     if (osrm) drawRoute(osrm.geometry);
@@ -1238,6 +1423,7 @@ async function calcRoute() {
 
 function buildSchedule(wps, origin, sc, osrm) {
   let mode = sc.mode;
+  const now = nowMin();
   const totalDwell = wps.reduce((s,w) => s+w.dwell, 0);
   const morningDur = sc.mE - sc.mS;
   const afternoonDur = sc.aE - sc.aS;
@@ -1263,27 +1449,35 @@ function buildSchedule(wps, origin, sc, osrm) {
 
   // Auto decide mode
   if (mode === 'auto') {
-    if (totalWork <= morningDur) mode = 'morning';
-    else if (totalWork <= contDur) mode = 'cont';
+    const morningLeft = now < sc.mE ? Math.max(0, sc.mE - Math.max(now, sc.mS)) : 0;
+    const contLeft = getRemainingAvailability(sc, 'cont', now);
+    if (morningLeft > 0 && totalWork <= morningLeft) mode = 'morning';
+    else if (contLeft > 0 && totalWork <= contLeft) mode = 'cont';
     else mode = 'split';
   }
 
+  const effectiveStart = getEffectiveStartMin(sc, mode, now);
   const itin = [];
-  let cur = mode==='cont' ? sc.cS : sc.mS;
+  let cur = effectiveStart;
 
   itin.push({ type:'start', name: origin===S.home?'Casa':'Trabajo', time:m2t(cur), icon:origin===S.home?'🏠':'💼', color:'#2563eb' });
 
-  let usedBreak = false;
+  let usedBreak = mode !== 'split' || cur >= sc.aS;
 
   for (let i=0; i<wps.length; i++) {
     const wp = wps[i];
     const travel = segDur[i];
     let arrival = cur + travel;
+    wp.scheduleConflict = null;
 
-    // Respect desired arrival (don't arrive before)
+    // Respect desired arrival (special case): if user forces a time, ignore customer hours.
     if (wp.desiredArrival) {
       const desired = t2m(wp.desiredArrival);
       if (desired > arrival) arrival = desired;
+    } else {
+      const adjusted = adjustArrivalToCustomerHours(arrival, wp.dwell, wp);
+      arrival = adjusted.arrival;
+      wp.scheduleConflict = adjusted.conflict;
     }
 
     // Split mode: check if crossing break
@@ -1300,6 +1494,13 @@ function buildSchedule(wps, origin, sc, osrm) {
     itin.push({ type:'travel', from: i===0?(origin===S.home?'Casa':'Trabajo'):wps[i-1].name, to:wp.name, dur:travel, dist:segDist[i] });
 
     const depart = arrival + wp.dwell;
+    if (!wp.desiredArrival && !wp.scheduleConflict) {
+      const windows = getCustomerWindows(wp);
+      const fitsWindow = windows.length ? windows.some(w => arrival >= w.start && depart <= w.end) : true;
+      if (!fitsWindow) {
+        wp.scheduleConflict = `Fuera de horario (${formatCustomerHours(wp) || 'sin horario'})`;
+      }
+    }
     wp.plannedArrival = m2t(arrival);
     wp.plannedDeparture = m2t(depart);
 
@@ -1315,20 +1516,43 @@ function buildSchedule(wps, origin, sc, osrm) {
   itin.push({ type:'end', name:origin===S.home?'Casa':'Trabajo', time:m2t(endT), icon:origin===S.home?'🏠':'💼', color:'#16a34a' });
 
   const totalDist = segDist.reduce((s,d)=>s+d,0);
-  return { itin, mode, totalDist, totalTravel, totalDwell, totalWork, startT:m2t(mode==='cont'?sc.cS:sc.mS), endT:m2t(endT) };
+  return {
+    itin, mode, totalDist, totalTravel, totalDwell, totalWork,
+    startT: m2t(effectiveStart),
+    endT: m2t(endT),
+    effectiveStart,
+    plannedFromNow: now,
+    segDur: [...segDur],
+    segDist: [...segDist]
+  };
 }
 
 function showRecommendation(result, sc) {
   const box = document.getElementById('modeRec');
   const pct = Math.round(result.totalWork / (sc.mE-sc.mS+sc.aE-sc.aS) * 100);
+  const conflicts = S.waypoints.filter(w => w.scheduleConflict).length;
   const msgs = {
     morning: `✅ Toda la ruta cabe en la <b>jornada de mañana</b> (${pct}% del tiempo). Tarde libre.`,
     split: `📅 Modo <b>partido</b> óptimo: ruta bien distribuida en mañana y tarde.`,
     cont: `⚡ Modo <b>seguido</b> recomendado: terminas ${result.endT} sin pausa de comida.`,
     auto: `🪄 Modo auto aplicado.`
   };
-  box.innerHTML = msgs[result.mode] || msgs.auto;
+  box.innerHTML = (msgs[result.mode] || msgs.auto) + (conflicts ? ` <br><span style="color:#b45309;font-weight:700">AtenciÃ³n: ${conflicts} cliente(s) quedan fuera de horario.</span>` : '');
   box.style.display = 'block';
+}
+
+function refreshRouteTimingIfNeeded() {
+  if (!S.route || !S.routeData || S.trk.active) return;
+  const sc = getSched();
+  if (validateSched(sc)) return;
+
+  const refreshed = buildSchedule(S.waypoints, S.routeData.origin, sc, S.routeData.osrm);
+  if (refreshed.startT === S.route.startT && refreshed.endT === S.route.endT) return;
+
+  S.route = refreshed;
+  renderRoute(refreshed);
+  showRecommendation(refreshed, sc);
+  renderWPs();
 }
 
 function renderRoute(r) {
@@ -1368,7 +1592,7 @@ function renderRoute(r) {
     const icon = step.type==='wp' ? `<b>${step.wpIdx}</b>` : step.icon;
     const name = esc(step.type==='wp' ? step.wp.name : step.name);
     const detail = step.type==='wp'
-      ? `⏱ ${step.wp.dwell} min${step.wp.desiredArrival ? ` · 🎯 ${esc(step.wp.desiredArrival)}` : ''}`
+      ? `⏱ ${fmtHM(step.wp.dwell)}${step.wp.desiredArrival ? ` · 🎯 ${esc(step.wp.desiredArrival)}` : ''}${formatCustomerHours(step.wp) ? ` · 🕘 ${esc(formatCustomerHours(step.wp))}` : ''}${step.wp.scheduleConflict ? ` · ${esc(step.wp.scheduleConflict)}` : ''}`
       : '';
     const time = step.type==='wp'
       ? `<div style="font-weight:700;color:var(--blue)">${m2t(step.arrival)}</div><div style="font-size:.7rem;color:var(--gray)">${m2t(step.depart)}</div>`
@@ -1539,8 +1763,8 @@ function startClientTimer(arrivedAt, dwellMin) {
     const sub = document.getElementById('trkTimerSub');
     if (sub) {
       const remaining = Math.round((planned - elapsed) / 60000);
-      if (remaining > 0) sub.textContent = `Quedan ~${remaining} min de los ${dwellMin} previstos`;
-      else sub.textContent = `⚠️ ${Math.abs(remaining)} min sobre el tiempo previsto`;
+      if (remaining > 0) sub.textContent = `Quedan ~${fmtHM(remaining)} de los ${fmtHM(dwellMin)} previstos`;
+      else sub.textContent = `⚠️ ${fmtHM(Math.abs(remaining))} sobre el tiempo previsto`;
     }
   }
   tick();
@@ -1594,7 +1818,7 @@ function renderTrkPanel() {
     document.getElementById('trkPlanned').textContent      = wp.plannedArrival  || '—';
     document.getElementById('trkEstimated').textContent    = delay === 0 ? (wp.plannedArrival||'—')
       : (wp.plannedArrival ? m2t(t2m(wp.plannedArrival)) : '—');
-    document.getElementById('trkDwell').textContent        = `${wp.dwell} min`;
+    document.getElementById('trkDwell').textContent        = fmtHM(wp.dwell);
 
     // Navigation links
     const gmUrl    = `https://www.google.com/maps/dir/?api=1&destination=${wp.lat},${wp.lng}&travelmode=driving`;
@@ -1659,7 +1883,7 @@ function renderTrkItinerary() {
           ${esc(wp.name)}
         </div>
         <div style="font-size:.72rem;color:var(--gray);display:flex;gap:6px;flex-wrap:wrap;margin-top:2px">
-          <span>⏱ ${wp.dwell}min</span>
+          <span>⏱ ${fmtHM(wp.dwell)}</span>
           ${wp.plannedArrival ? `<span>🕐 ${wp.plannedArrival}</span>` : ''}
           ${leftTime ? `<span>🚪 ${leftTime}</span>` : ''}
           ${delayTag}
@@ -1686,6 +1910,7 @@ function showTab(tab) {
     t.setAttribute('aria-selected', on ? 'true' : 'false');
   });
   document.querySelectorAll('.tc').forEach(c => c.classList.toggle('on', c.id === 'tab-' + tab));
+  if (tab === 'route') refreshRouteTimingIfNeeded();
 }
 
 function notify(msg, type = '') {
@@ -1732,9 +1957,15 @@ function saveStorage() {
         lng:              w.lng,
         name:             w.name,
         dwell:            w.dwell,
+        openTime:         w.openTime         || null,
+        closeTime:        w.closeTime        || null,
+        openTime2:        w.openTime2        || null,
+        closeTime2:       w.closeTime2       || null,
+        openingHoursRaw:  w.openingHoursRaw  || null,
         desiredArrival:   w.desiredArrival   || null,
         plannedArrival:   w.plannedArrival   || null,
-        plannedDeparture: w.plannedDeparture || null
+        plannedDeparture: w.plannedDeparture || null,
+        scheduleConflict: w.scheduleConflict || null
       })),
       // Resumen de ruta (sin itin — se reconstruye desde los waypoints)
       route: S.route ? {
@@ -1818,7 +2049,16 @@ function loadStorage() {
     // ── 2. Waypoints ──
     if (d.waypoints?.length) {
       d.waypoints.forEach(w => {
-        S.waypoints.push({ ...w, actualDelay: null });
+        S.waypoints.push({
+          ...w,
+          openTime: parseTimeOrNull(w.openTime),
+          closeTime: parseTimeOrNull(w.closeTime),
+          openTime2: parseTimeOrNull(w.openTime2),
+          closeTime2: parseTimeOrNull(w.closeTime2),
+          openingHoursRaw: w.openingHoursRaw || null,
+          scheduleConflict: w.scheduleConflict || null,
+          actualDelay: null
+        });
         addWPMarker(S.waypoints[S.waypoints.length - 1]);
       });
       renderWPs();

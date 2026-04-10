@@ -133,6 +133,14 @@
           <input id="npDwell" type="number" placeholder="Minutos de estancia" min="1" max="480" aria-label="Minutos de estancia"/>
           <input id="npArrival" type="time" title="Hora deseada de llegada (opcional)" style="max-width:110px" aria-label="Hora deseada de llegada"/>
         </div>
+        <div class="row">
+          <input id="npOpen" type="time" title="Hora de apertura (opcional)" aria-label="Hora de apertura del cliente"/>
+          <input id="npClose" type="time" title="Hora de cierre (opcional)" aria-label="Hora de cierre del cliente"/>
+        </div>
+        <div class="row">
+          <input id="npOpen2" type="time" title="Segunda apertura (opcional)" aria-label="Segunda apertura del cliente"/>
+          <input id="npClose2" type="time" title="Segundo cierre (opcional)" aria-label="Segundo cierre del cliente"/>
+        </div>
         <div style="font-size:.7rem;color:var(--gray);margin-bottom:6px">Hora llegada deseada (opcional)</div>
         <button class="btn bp bfull" onclick="startAddPoint()">
           <i class="fas fa-crosshairs"></i> Clic en mapa para colocar
@@ -143,7 +151,7 @@
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
           <span style="font-weight:700;font-size:.9rem">Paradas (<span id="wpCount">0</span>)</span>
           <div style="display:flex;gap:5px">
-            <button class="btn bg bsm" onclick="optimizeOrder()" title="Optimizar orden"><i class="fas fa-wand-magic-sparkles"></i> Optimizar</button>
+            <button class="btn bg bsm" onclick="optimizeOrder()" title="Reoptimizar orden manualmente"><i class="fas fa-wand-magic-sparkles"></i> Reoptimizar</button>
             <button class="btn bd bsm" onclick="clearAll()" title="Borrar todo"><i class="fas fa-trash"></i></button>
           </div>
         </div>
@@ -339,6 +347,17 @@
     <input id="eDwell" type="number" min="1" max="480" placeholder="30"/>
     <label>Hora deseada de llegada <span style="font-weight:400;color:var(--gray)">(opcional)</span></label>
     <input id="eArrival" type="time"/>
+    <label>Horario del cliente <span style="font-weight:400;color:var(--gray)">(opcional)</span></label>
+    <div style="display:flex;align-items:center;gap:6px">
+      <input id="eOpen" type="time" aria-label="Hora de apertura del cliente"/>
+      <span style="color:var(--gray)">—</span>
+      <input id="eClose" type="time" aria-label="Hora de cierre del cliente"/>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;margin-top:6px">
+      <input id="eOpen2" type="time" aria-label="Segunda apertura del cliente"/>
+      <span style="color:var(--gray)">—</span>
+      <input id="eClose2" type="time" aria-label="Segundo cierre del cliente"/>
+    </div>
     <div style="display:flex;gap:8px;margin-top:14px">
       <button class="btn bp" style="flex:1" onclick="saveEdit()"><i class="fas fa-save"></i> Guardar</button>
       <button class="btn bg" onclick="closeModal()">Cancelar</button>
