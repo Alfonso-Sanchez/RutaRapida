@@ -320,6 +320,22 @@ function clearSearchMarkers() {
   S.searchMarkers = [];
 }
 
+function resetBusinessSearchUI() {
+  clearSearchMarkers();
+  const box = document.getElementById('bizResults');
+  if (box) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    box._results = [];
+  }
+  const input = document.getElementById('bizInput');
+  if (input) input.value = '';
+  const type = document.getElementById('bizType');
+  if (type) type.value = '';
+  const scope = document.getElementById('bizScope');
+  if (scope) scope.value = 'here';
+}
+
 function showSearchResultsOnMap(results, onAddFn) {
   clearSearchMarkers();
   if (!results?.length) return;
@@ -1410,6 +1426,7 @@ async function calcRoute() {
     else drawLines(allPts);
 
     showRecommendation(result, sc);
+    resetBusinessSearchUI();
     renderWPs();
     showTab('route');
     document.getElementById('trackBtn').style.display = 'flex';
