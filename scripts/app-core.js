@@ -73,7 +73,7 @@ function onMapClick(e) {
       notify('El horario del cliente es inválido', 'error');
       return;
     }
-    addWP({ lat, lng, name, dwell, desiredArrival: arr, openTime, closeTime, openTime2, closeTime2 });
+    addWP({ lat, lng, name, dwell, priority: document.getElementById('npPriority').value, desiredArrival: arr, openTime, closeTime, openTime2, closeTime2 });
     S.addingPt = false;
     setCursor('');
     document.getElementById('npName').value = '';
@@ -83,6 +83,7 @@ function onMapClick(e) {
     document.getElementById('npClose').value = '';
     document.getElementById('npOpen2').value = '';
     document.getElementById('npClose2').value = '';
+    document.getElementById('npPriority').value = 'normal';
     notify('Punto añadido: ' + name, 'success');
   }
 }
@@ -106,6 +107,20 @@ function cleanPlaceText(raw) {
   } catch {
     return text.replace(/\s+/g, ' ').trim();
   }
+}
+
+function normalizePriorityLevel(raw) {
+  if (raw === true || raw === 'true' || raw === 1 || raw === '1') return 'high';
+  if (raw === 'force_first') return 'force_first';
+  if (raw === 'high') return 'high';
+  return 'normal';
+}
+
+function getPriorityMeta(raw) {
+  const level = normalizePriorityLevel(raw);
+  if (level === 'force_first') return { level, label: 'Forzar primero', badge: 'Primero', bg: '#fee2e2', color: '#b91c1c' };
+  if (level === 'high') return { level, label: 'Alta', badge: 'Alta', bg: '#ffedd5', color: '#c2410c' };
+  return { level, label: 'Normal', badge: '', bg: '', color: '' };
 }
 
 function parseDwell(raw, fallback = 30) {
@@ -196,6 +211,7 @@ function sleep(ms) {
 function invalidateRoute() {
   S.route = null;
   S.routeData = null;
+  S._routeDrawErrorShown = false;
   const trackBtn = document.getElementById('trackBtn');
   if (trackBtn) trackBtn.style.display = 'none';
 }
@@ -394,15 +410,19 @@ function wpTrkStatus(id) {
 function addWPMarker(wp) {
   const idx = S.waypoints.indexOf(wp) + 1;
   const trkSt = wpTrkStatus(wp.id);
-  const color = trkSt === 'done' ? '#6b7280' : trkSt === 'at_client' ? '#16a34a' : '#ea580c';
+  const priorityLevel = normalizePriorityLevel(wp.priority);
+  let color = '#16a34a';
+  if (priorityLevel === 'high') color = '#ea580c';
+  if (priorityLevel === 'force_first') color = '#dc2626';
+  if (trkSt === 'at_client') color = '#16a34a';
+  if (trkSt === 'done') color = '#6b7280';
   const m = setMk('wp_' + wp.id, wp.lat, wp.lng, idx, color, false);
-  m.options.draggable = true;
-  if (m.dragging) m.dragging.enable();
-
   const popContent = () => `
     <div style="min-width:160px;font-size:.82rem">
       <b>${esc(wp.name)}</b><br>
       <span style="color:#6b7280">Estancia: ${fmtHM(wp.dwell)}</span>
+      ${priorityLevel === 'high' ? `<br><span style="color:#c2410c">Prioridad: Alta</span>` : ''}
+      ${priorityLevel === 'force_first' ? `<br><span style="color:#b91c1c">Prioridad: Forzar primero</span>` : ''}
       ${wp.desiredArrival ? `<br><span style="color:#2563eb">Llegar: ${esc(wp.desiredArrival)}</span>` : ''}
       ${formatCustomerHours(wp) ? `<br><span style="color:#0f766e">Horario: ${esc(formatCustomerHours(wp))}</span>` : ''}
       ${wp.plannedArrival ? `<br><span style="color:#374151">Previsto: ${esc(wp.plannedArrival)} – ${esc(wp.plannedDeparture)}</span>` : ''}
@@ -414,12 +434,6 @@ function addWPMarker(wp) {
 
   m.bindPopup(popContent());
   m.on('click', () => m.setPopupContent(popContent()));
-  m.on('dragend', ev => {
-    wp.lat = ev.target.getLatLng().lat;
-    wp.lng = ev.target.getLatLng().lng;
-    invalidateRoute();
-    saveStorage();
-  });
 }
 
 function mapViewbox() {
@@ -590,6 +604,7 @@ function addSearchResultAsPoint(lat, lng, name) {
   document.getElementById('eName').value = S.pendingCoords.name;
   document.getElementById('eDwell').value = '30';
   document.getElementById('eArrival').value = '';
+  document.getElementById('ePriority').value = 'normal';
   document.getElementById('eOpen').value = S.pendingCoords.openTime || '';
   document.getElementById('eClose').value = S.pendingCoords.closeTime || '';
   document.getElementById('eOpen2').value = S.pendingCoords.openTime2 || '';
@@ -706,6 +721,7 @@ function addBizAsPoint(lat, lng, name) {
   document.getElementById('eName').value = S.pendingCoords.name;
   document.getElementById('eDwell').value = '30';
   document.getElementById('eArrival').value = '';
+  document.getElementById('ePriority').value = 'normal';
   document.getElementById('eOpen').value = S.pendingCoords.openTime || '';
   document.getElementById('eClose').value = S.pendingCoords.closeTime || '';
   document.getElementById('eOpen2').value = S.pendingCoords.openTime2 || '';

@@ -35,6 +35,7 @@ async function parseUrl() {
   document.getElementById('eName').value = coords.name || '';
   document.getElementById('eDwell').value = '30';
   document.getElementById('eArrival').value = '';
+  document.getElementById('ePriority').value = 'normal';
   document.getElementById('editModal').style.display = 'flex';
   document.getElementById('urlInput').value = '';
 }
@@ -224,6 +225,7 @@ function buildRouteExportSnapshot() {
       lat: w.lat,
       lng: w.lng,
       dwell: w.dwell,
+      priority: normalizePriorityLevel(w.priorityLevel ?? w.priority),
       desiredArrival: w.desiredArrival || null,
       openTime: w.openTime || null,
       closeTime: w.closeTime || null,
@@ -339,6 +341,7 @@ function applyImportedRoute() {
     lng: parseFloat(w.lng),
     name: w.name,
     dwell: w.dwell,
+    priority: normalizePriorityLevel(w.priorityLevel ?? w.priority),
     desiredArrival: w.desiredArrival,
     openTime: w.openTime,
     closeTime: w.closeTime,
@@ -359,11 +362,12 @@ function applyImportedRoute() {
   notify('Ruta importada. Ya puedes recalcular en este dispositivo.', 'success');
 }
 
-function addWP({ lat, lng, name, dwell, desiredArrival, openTime, closeTime, openTime2, closeTime2, openingHoursRaw, silent }) {
+function addWP({ lat, lng, name, dwell, priority, desiredArrival, openTime, closeTime, openTime2, closeTime2, openingHoursRaw, silent }) {
   const wp = {
     id: S.nid++, lat, lng,
     name: name || `Cliente ${S.nid}`,
     dwell: parseDwell(dwell, 30),
+    priority: normalizePriorityLevel(priority),
     desiredArrival: desiredArrival || null,
     openTime: parseTimeOrNull(openTime),
     closeTime: parseTimeOrNull(closeTime),
@@ -405,6 +409,7 @@ function editWP(id) {
   document.getElementById('eClose').value = wp.closeTime || '';
   document.getElementById('eOpen2').value = wp.openTime2 || '';
   document.getElementById('eClose2').value = wp.closeTime2 || '';
+  document.getElementById('ePriority').value = normalizePriorityLevel(wp.priority);
   document.getElementById('editModal').style.display = 'flex';
 }
 
@@ -412,6 +417,7 @@ function saveEdit() {
   const id = document.getElementById('eId').value;
   const name = document.getElementById('eName').value.trim() || 'Cliente';
   const dwell = parseDwell(document.getElementById('eDwell').value, 30);
+  const priority = normalizePriorityLevel(document.getElementById('ePriority').value);
   const arr = document.getElementById('eArrival').value || null;
   const openTime = parseTimeOrNull(document.getElementById('eOpen').value);
   const closeTime = parseTimeOrNull(document.getElementById('eClose').value);
@@ -424,13 +430,14 @@ function saveEdit() {
   }
 
   if (id === '__new__' && S.pendingCoords) {
-    addWP({ ...S.pendingCoords, name, dwell, desiredArrival: arr, openTime, closeTime, openTime2, closeTime2 });
+    addWP({ ...S.pendingCoords, name, dwell, priority, desiredArrival: arr, openTime, closeTime, openTime2, closeTime2 });
     S.pendingCoords = null;
   } else {
     const wp = S.waypoints.find(w => w.id === +id);
     if (wp) {
       wp.name = name;
       wp.dwell = dwell;
+      wp.priority = priority;
       wp.desiredArrival = arr;
       wp.openTime = openTime;
       wp.closeTime = closeTime;
@@ -487,6 +494,7 @@ function renderWPs() {
     const trkSt = wpTrkStatus(wp.id);
     const done = trkSt === 'done';
     const tw = S.trk.wps.find(w => w.id === wp.id);
+    const priorityMeta = getPriorityMeta(wp.priority);
     let status = '';
     if (S.trk.active && done && tw?.actualDelay !== null && tw?.actualDelay !== undefined) {
       const d = tw.actualDelay;
@@ -495,11 +503,13 @@ function renderWPs() {
         : `<span class="wp-status s-ok">En hora</span>`;
     }
     const planned = wp.plannedArrival ? `<span class="badge bb">${esc(wp.plannedArrival)}</span>` : '';
+    const priority = wp.priority ? `<span class="badge" style="background:#fee2e2;color:#991b1b">⚡ Prioridad</span>` : '';
     const fixed = wp.desiredArrival ? `<span class="badge" style="background:#fef9c3;color:#854d0e">🎯 ${esc(wp.desiredArrival)}</span>` : '';
     const hoursText = formatCustomerHours(wp);
     const hours = hoursText ? `<span class="badge" style="background:#ecfeff;color:#155e75">🕘 ${esc(hoursText)}</span>` : '';
     const conflict = wp.scheduleConflict ? `<span class="wp-status s-late">${esc(wp.scheduleConflict)}</span>` : '';
     const numBg = done ? '#6b7280' : trkSt === 'at_client' ? '#16a34a' : '#ea580c';
+    const priorityBadge = priorityMeta.badge ? `<span class="badge" style="background:${priorityMeta.bg};color:${priorityMeta.color}">${esc(priorityMeta.badge)}</span>` : '';
 
     return `<div class="wp-item ${done ? 'done' : ''}" data-id="${wp.id}">
       <div class="wp-num" style="background:${numBg};cursor:${S.trk.active ? 'default' : 'grab'}" title="${S.trk.active ? '' : 'Arrastrar para reordenar'}">${done ? '✓' : i + 1}</div>
@@ -507,7 +517,7 @@ function renderWPs() {
         <div class="wp-name" style="${done ? 'text-decoration:line-through;color:#6b7280' : ''}">${esc(wp.name)}</div>
         <div class="wp-meta">
           <span>⏱ ${fmtHM(wp.dwell)}</span>
-          ${fixed}${planned}${hours}
+          ${priorityBadge}${fixed}${planned}${hours}
         </div>
         ${status}${conflict}
       </div>

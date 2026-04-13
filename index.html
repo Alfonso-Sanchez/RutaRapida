@@ -164,6 +164,17 @@
           <input id="npOpen2" type="time" title="Segunda apertura (opcional)" aria-label="Segunda apertura del cliente"/>
           <input id="npClose2" type="time" title="Segundo cierre (opcional)" aria-label="Segundo cierre del cliente"/>
         </div>
+        <label>Nivel de prioridad</label>
+        <div class="row">
+          <select id="npPriority" aria-label="Nivel de prioridad de la parada">
+            <option value="normal">Normal</option>
+            <option value="high">Alta</option>
+            <option value="force_first">Forzar primero</option>
+          </select>
+        </div>
+        <div style="font-size:.72rem;color:var(--gray);margin-top:4px;line-height:1.5">
+          <b>Alta</b> intenta visitarla pronto sin romper demasiado la ruta. <b>Forzar primero</b> será la primera parada, o de las primeras si hay varias de este tipo.
+        </div>
         <div style="font-size:.7rem;color:var(--gray);margin-bottom:6px">Hora llegada deseada (opcional)</div>
         <button class="btn bp bfull" onclick="startAddPoint()">
           <i class="fas fa-crosshairs"></i> Clic en mapa para colocar
@@ -306,6 +317,9 @@
         <button class="btn bd bfull" id="trkLeftBtn" onclick="trkLeft()" style="display:none;padding:13px;font-size:.95rem">
           🚪 He salido — siguiente parada
         </button>
+        <button class="btn bg bfull" id="trkCloseNowBtn" onclick="trkCompleteNow()" style="display:none;margin-top:6px;padding:12px;font-size:.9rem">
+          ⏭️ Cerrar parada y recalcular
+        </button>
       </div>
 
       <!-- Itinerary list -->
@@ -380,6 +394,15 @@
       <input id="eOpen2" type="time" aria-label="Segunda apertura del cliente"/>
       <span style="color:var(--gray)">—</span>
       <input id="eClose2" type="time" aria-label="Segundo cierre del cliente"/>
+    </div>
+    <label>Nivel de prioridad</label>
+    <select id="ePriority" aria-label="Nivel de prioridad del punto">
+      <option value="normal">Normal</option>
+      <option value="high">Alta</option>
+      <option value="force_first">Forzar primero</option>
+    </select>
+    <div style="font-size:.72rem;color:var(--gray);margin-top:4px;line-height:1.5">
+      <b>Alta</b> intenta visitarla pronto sin romper demasiado la ruta. <b>Forzar primero</b> será la primera parada, o de las primeras si hay varias de este tipo.
     </div>
     <div style="display:flex;gap:8px;margin-top:14px">
       <button class="btn bp" style="flex:1" onclick="saveEdit()"><i class="fas fa-save"></i> Guardar</button>

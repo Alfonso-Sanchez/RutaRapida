@@ -6,28 +6,189 @@ function haversine(a, b) {
   return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
 }
 
-function nearestNeighbor(origin, wps) {
-  const visited = new Array(wps.length).fill(false);
+function priorityLevelOf(wp) {
+  return normalizePriorityLevel(wp?.priority);
+}
+
+function priorityPenaltyWeight(level) {
+  if (level === 'force_first') return 2.5;
+  if (level === 'high') return 0.45;
+  return 0;
+}
+
+function buildPriorityAwareOrder(count, getStepCost, wps) {
+  const visited = new Array(count).fill(false);
   const route = [];
-  let cur = origin;
-  for (let s = 0; s < wps.length; s++) {
-    let best = -1;
-    let bestD = Infinity;
-    wps.forEach((w, j) => {
-      if (visited[j]) return;
-      const d = haversine(cur, w);
-      if (d < bestD) { best = j; bestD = d; }
+  let cur = -1;
+
+  for (let step = 0; step < count; step++) {
+    const remainingHigh = [];
+    for (let j = 0; j < count; j++) {
+      if (!visited[j] && priorityLevelOf(wps[j]) === 'high') remainingHigh.push(j);
+    }
+
+    let focusHigh = -1;
+    let focusCost = Infinity;
+    remainingHigh.forEach(j => {
+      const c = getStepCost(cur, j);
+      if (Number.isFinite(c) && c < focusCost) {
+        focusCost = c;
+        focusHigh = j;
+      }
     });
+
+    let best = -1;
+    let bestScore = Infinity;
+    for (let j = 0; j < count; j++) {
+      if (visited[j]) continue;
+      const stepCost = getStepCost(cur, j);
+      if (!Number.isFinite(stepCost)) continue;
+
+      let score = stepCost;
+      const level = priorityLevelOf(wps[j]);
+      if (level === 'high') {
+        score -= Math.min(stepCost * 0.35, 10);
+      }
+
+      if (focusHigh !== -1 && focusHigh !== j) {
+        const curToHigh = getStepCost(cur, focusHigh);
+        const candToHigh = getStepCost(j, focusHigh);
+        if (Number.isFinite(curToHigh) && Number.isFinite(candToHigh)) {
+          const progress = Math.max(0, curToHigh - candToHigh);
+          score -= Math.min(progress * 0.55, stepCost * 0.7);
+        }
+      }
+
+      if (score < bestScore) {
+        best = j;
+        bestScore = score;
+      }
+    }
+
+    if (best === -1) break;
     visited[best] = true;
     route.push(best);
-    cur = wps[best];
+    cur = best;
   }
+
   return route;
 }
 
+function promoteHighPriorityStops(route, startOrigin) {
+  if (route.length < 3) return route;
+  const result = [...route];
+  const latestPreferredPos = Math.max(1, Math.floor((result.length - 1) / 2));
+
+  for (let i = 0; i < result.length; i++) {
+    const wp = result[i];
+    if (priorityLevelOf(wp) !== 'high' || i <= latestPreferredPos) continue;
+
+    let bestPos = i;
+    let bestScore = Infinity;
+    const searchTo = Math.min(latestPreferredPos, i - 1);
+
+    for (let pos = 0; pos <= searchTo; pos++) {
+      const prevBefore = pos === 0 ? startOrigin : result[pos - 1];
+      const currentAtPos = result[pos];
+      const nextAfterCurrent = pos + 1 < result.length ? result[pos + 1] : null;
+
+      const beforeCost =
+        haversine(prevBefore, currentAtPos) +
+        (nextAfterCurrent ? haversine(currentAtPos, nextAfterCurrent) : 0);
+      const afterCost =
+        haversine(prevBefore, wp) +
+        (nextAfterCurrent ? haversine(wp, nextAfterCurrent) : 0);
+
+      const extraCost = afterCost - beforeCost;
+      const latenessPenalty = (pos + 1) * 4;
+      const score = extraCost + latenessPenalty;
+
+      if (score < bestScore) {
+        bestScore = score;
+        bestPos = pos;
+      }
+    }
+
+    if (bestPos !== i && bestScore <= 45) {
+      const [moved] = result.splice(i, 1);
+      result.splice(bestPos, 0, moved);
+    }
+  }
+
+  return result;
+}
+
+function shapeRouteTowardHighPriority(route, startOrigin) {
+  if (route.length < 3) return route;
+  const highs = route.filter(wp => priorityLevelOf(wp) === 'high');
+  if (!highs.length) return route;
+
+  const targetHigh = [...highs].sort((a, b) => haversine(startOrigin, a) - haversine(startOrigin, b))[0];
+  const directToHigh = haversine(startOrigin, targetHigh);
+  const maxDetour = Math.max(12, Math.min(40, directToHigh * 0.22));
+  const beforeHighCandidates = [];
+  const afterHigh = [];
+
+  route.forEach(wp => {
+    if (wp === targetHigh) return;
+    if (priorityLevelOf(wp) === 'force_first') {
+      beforeHighCandidates.push(wp);
+      return;
+    }
+    if (priorityLevelOf(wp) === 'high') {
+      afterHigh.push(wp);
+      return;
+    }
+
+    const remainingToHigh = haversine(wp, targetHigh);
+    const progress = directToHigh - remainingToHigh;
+    const detour = haversine(startOrigin, wp) + haversine(wp, targetHigh) - directToHigh;
+    const progressRatio = directToHigh > 0 ? progress / directToHigh : 0;
+    const makesRealProgress = progressRatio >= 0.1 || progress >= 8;
+    const almostOnTheWay = detour <= maxDetour && progressRatio >= 0.03;
+
+    if (makesRealProgress || almostOnTheWay) beforeHighCandidates.push(wp);
+    else afterHigh.push(wp);
+  });
+
+  beforeHighCandidates.sort((a, b) => {
+    const aStart = haversine(startOrigin, a);
+    const bStart = haversine(startOrigin, b);
+    const aRemain = haversine(a, targetHigh);
+    const bRemain = haversine(b, targetHigh);
+    const aDetour = aStart + aRemain - directToHigh;
+    const bDetour = bStart + bRemain - directToHigh;
+    const aScore = (aStart * 0.8) + (aDetour * 1.2) + (aRemain * 0.3);
+    const bScore = (bStart * 0.8) + (bDetour * 1.2) + (bRemain * 0.3);
+    return aScore - bScore;
+  });
+
+  const maxBefore = Math.min(2, Math.max(1, route.length - 2));
+  const keptBefore = beforeHighCandidates.slice(0, 1);
+  const maybeSecond = beforeHighCandidates[1];
+  if (maybeSecond) {
+    const secondDetour = haversine(startOrigin, maybeSecond) + haversine(maybeSecond, targetHigh) - directToHigh;
+    const secondProgress = directToHigh - haversine(maybeSecond, targetHigh);
+    if (secondDetour <= Math.max(10, maxDetour * 0.7) && secondProgress >= Math.max(6, directToHigh * 0.08)) {
+      keptBefore.push(maybeSecond);
+    }
+  }
+  const deferred = beforeHighCandidates.slice(keptBefore.length, maxBefore);
+
+  return [...keptBefore, targetHigh, ...deferred, ...afterHigh];
+}
+
 function routeCost(order, origin, wps) {
-  let c = 0, prev = origin;
-  for (const i of order) { c += haversine(prev, wps[i]); prev = wps[i]; }
+  let c = 0;
+  let traveledBefore = 0;
+  let prev = origin;
+  for (const i of order) {
+    const step = haversine(prev, wps[i]);
+    c += step;
+    c += traveledBefore * priorityPenaltyWeight(priorityLevelOf(wps[i]));
+    traveledBefore += step;
+    prev = wps[i];
+  }
   return c;
 }
 
@@ -61,34 +222,13 @@ async function getOsrmTable(origin, pts) {
   }
 }
 
-function nearestNeighborMatrix(originToPts, matrixPts) {
-  const n = originToPts.length;
-  const visited = new Array(n).fill(false);
-  const route = [];
-  let cur = -1;
-  for (let step = 0; step < n; step++) {
-    let best = -1;
-    let bestCost = Infinity;
-    for (let j = 0; j < n; j++) {
-      if (visited[j]) continue;
-      const c = cur === -1 ? originToPts[j] : matrixPts[cur][j];
-      if (Number.isFinite(c) && c < bestCost) {
-        best = j;
-        bestCost = c;
-      }
-    }
-    if (best === -1) break;
-    visited[best] = true;
-    route.push(best);
-    cur = best;
-  }
-  return route;
-}
-
 function routeCostMatrix(order, originToPts, matrixPts) {
-  let c = 0, prev = -1;
+  let c = 0, prev = -1, traveledBefore = 0;
   for (const i of order) {
-    c += prev === -1 ? originToPts[i] : matrixPts[prev][i];
+    const step = prev === -1 ? originToPts[i] : matrixPts[prev][i];
+    c += step;
+    c += traveledBefore * priorityPenaltyWeight(priorityLevelOf(matrixPts._wps?.[i]));
+    traveledBefore += step;
     prev = i;
   }
   return c;
@@ -118,22 +258,34 @@ function twoOptMatrix(order, originToPts, matrixPts) {
 async function getOptimizedWaypoints(origin, waypoints) {
   const fixed = waypoints.filter(w => w.desiredArrival).sort((a, b) => a.desiredArrival.localeCompare(b.desiredArrival));
   const flex = waypoints.filter(w => !w.desiredArrival);
+  const forceFirst = flex
+    .filter(w => priorityLevelOf(w) === 'force_first')
+    .sort((a, b) => haversine(origin, a) - haversine(origin, b));
+  const regularFlex = flex.filter(w => priorityLevelOf(w) !== 'force_first');
 
-  let optimized = flex;
-  if (flex.length > 1) {
-    const table = await getOsrmTable(origin, flex);
-    if (table && table.length === flex.length + 1) {
-      const originToPts = table[0].slice(1).map(v => (v || 0) / 60);
-      const matrixPts = table.slice(1).map(r => r.slice(1).map(v => (v || 0) / 60));
-      const nn = nearestNeighborMatrix(originToPts, matrixPts);
-      const oo = twoOptMatrix(nn, originToPts, matrixPts);
-      optimized = oo.map(i => flex[i]);
-    } else {
-      const nn = nearestNeighbor(origin, flex);
-      const oo = twoOpt(nn, origin, flex);
-      optimized = oo.map(i => flex[i]);
+  async function optimizeFlexGroup(group, startOrigin) {
+    let optimized = group;
+    if (group.length > 1) {
+      const table = await getOsrmTable(startOrigin, group);
+      if (table && table.length === group.length + 1) {
+        const originToPts = table[0].slice(1).map(v => (v || 0) / 60);
+        const matrixPts = table.slice(1).map(r => r.slice(1).map(v => (v || 0) / 60));
+        matrixPts._wps = group;
+        const nn = buildPriorityAwareOrder(group.length, (fromIdx, toIdx) => fromIdx === -1 ? originToPts[toIdx] : matrixPts[fromIdx][toIdx], group);
+        const oo = twoOptMatrix(nn, originToPts, matrixPts);
+        optimized = oo.map(i => group[i]);
+      } else {
+        const nn = buildPriorityAwareOrder(group.length, (fromIdx, toIdx) => fromIdx === -1 ? haversine(startOrigin, group[toIdx]) : haversine(group[fromIdx], group[toIdx]), group);
+        const oo = twoOpt(nn, startOrigin, group);
+        optimized = oo.map(i => group[i]);
+      }
     }
+    return optimized;
   }
+
+  const startForRegular = forceFirst.length ? forceFirst[forceFirst.length - 1] : origin;
+  const optimizedFlex = await optimizeFlexGroup(regularFlex, startForRegular);
+  const optimized = [...forceFirst, ...shapeRouteTowardHighPriority(promoteHighPriorityStops(optimizedFlex, startForRegular), startForRegular)];
 
   if (!fixed.length) return optimized;
 
@@ -383,8 +535,12 @@ function renderRoute(r) {
     const t = step.type === 'wp' ? 'wp' : step.type;
     const icon = step.type === 'wp' ? `<b>${step.wpIdx}</b>` : step.icon;
     const name = esc(step.type === 'wp' ? step.wp.name : step.name);
+    const priorityMeta = getPriorityMeta(step.wp?.priority);
     const detail = step.type === 'wp'
-      ? `⏱ ${fmtHM(step.wp.dwell)}${step.wp.desiredArrival ? ` · 🎯 ${esc(step.wp.desiredArrival)}` : ''}${formatCustomerHours(step.wp) ? ` · 🕘 ${esc(formatCustomerHours(step.wp))}` : ''}${step.wp.scheduleConflict ? ` · ${esc(step.wp.scheduleConflict)}` : ''}`
+      ? `⏱ ${fmtHM(step.wp.dwell)}${step.wp.priority ? ' · ⚡ Prioridad' : ''}${step.wp.desiredArrival ? ` · 🎯 ${esc(step.wp.desiredArrival)}` : ''}${formatCustomerHours(step.wp) ? ` · 🕘 ${esc(formatCustomerHours(step.wp))}` : ''}${step.wp.scheduleConflict ? ` · ${esc(step.wp.scheduleConflict)}` : ''}`
+      : '';
+    const detailText = step.type === 'wp'
+      ? `Servicio ${fmtHM(step.wp.dwell)}${priorityMeta.badge ? ` · ${esc(priorityMeta.label)}` : ''}${step.wp.desiredArrival ? ` · ${esc(step.wp.desiredArrival)}` : ''}${formatCustomerHours(step.wp) ? ` · ${esc(formatCustomerHours(step.wp))}` : ''}${step.wp.scheduleConflict ? ` · ${esc(step.wp.scheduleConflict)}` : ''}`
       : '';
     const time = step.type === 'wp'
       ? `<div style="font-weight:700;color:var(--blue)">${m2t(step.arrival)}</div><div style="font-size:.7rem;color:var(--gray)">${m2t(step.depart)}</div>`
@@ -392,7 +548,7 @@ function renderRoute(r) {
 
     return `<div class="rstep">
       <div class="rstep-icon" style="background:${bgs[t] || '#f1f5f9'};color:${colors[t] || '#374151'}">${icon}</div>
-      <div class="rstep-info"><div class="rstep-name">${name}</div><div class="rstep-detail">${detail}</div></div>
+      <div class="rstep-info"><div class="rstep-name">${name}</div><div class="rstep-detail">${detailText}</div></div>
       <div class="rstep-time">${time}</div>
     </div>`;
   }).join('');
@@ -444,6 +600,29 @@ function applyProjectionToRemaining(startIdx, projection) {
   S.route.totalWork = S.route.totalTravel + S.route.totalDwell;
   S.route.endLabel = projection.endLabel || getBaseLabel(S.endPt);
   rebuildItin();
+}
+
+function getNextOpenTrackIndex(startIdx = 0) {
+  for (let i = startIdx; i < S.trk.wps.length; i++) {
+    if (S.trk.wps[i]?.status !== 'done') return i;
+  }
+  return S.trk.wps.length;
+}
+
+function getRemainingTrackableWaypoints(startIdx = 0) {
+  return S.waypoints.filter((_, i) => i >= startIdx && S.trk.wps[i]?.status !== 'done');
+}
+
+async function refreshTrackingRouteAfterMutation(context = {}) {
+  const anchor = context.anchor || getBasePoint(S.startPt);
+  const startIdx = Number.isFinite(context.startIdx) ? context.startIdx : S.trk.currentIdx;
+  const projection = await recalcTrackingProjection(anchor, getRemainingTrackableWaypoints(startIdx), {
+    destination: getBasePoint(S.endPt),
+    startLabel: context.startLabel || getBaseLabel(S.startPt),
+    endLabel: getBaseLabel(S.endPt),
+    startMinOverride: Number.isFinite(context.startMinOverride) ? context.startMinOverride : nowMin()
+  });
+  applyProjectionToRemaining(startIdx, projection);
 }
 
 function toggleTracking() {
@@ -519,7 +698,7 @@ async function trkArrived() {
   wp.plannedArrival = nowT();
   wp.plannedDeparture = m2t(actualMin + wp.dwell);
 
-  const remaining = S.waypoints.slice(S.trk.currentIdx + 1);
+  const remaining = getRemainingTrackableWaypoints(S.trk.currentIdx + 1);
   const projection = await recalcTrackingProjection(wp, remaining, {
     destination: getBasePoint(S.endPt),
     startLabel: wp.name,
@@ -549,10 +728,12 @@ async function trkLeft() {
   S.trk.delay = newDelay;
   wp.plannedDeparture = nowT();
 
-  S.trk.currentIdx++;
-  if (S.trk.currentIdx < S.trk.wps.length) S.trk.wps[S.trk.currentIdx].status = 'traveling';
+  S.trk.currentIdx = getNextOpenTrackIndex(S.trk.currentIdx + 1);
+  if (S.trk.currentIdx < S.trk.wps.length && S.trk.wps[S.trk.currentIdx].status === 'pending') {
+    S.trk.wps[S.trk.currentIdx].status = 'traveling';
+  }
 
-  const remaining = S.waypoints.slice(S.trk.currentIdx);
+  const remaining = getRemainingTrackableWaypoints(S.trk.currentIdx);
   const projection = await recalcTrackingProjection(wp, remaining, {
     destination: getBasePoint(S.endPt),
     startLabel: wp.name,
@@ -574,19 +755,19 @@ async function trkReopen(idx) {
   if (!S.trk.active || idx < 0 || idx >= S.waypoints.length) return;
   if (S.trk.timerInterval) { clearInterval(S.trk.timerInterval); S.trk.timerInterval = null; }
 
-  S.trk.currentIdx = idx;
   S.trk.wps.forEach((tw, i) => {
-    if (i < idx && tw.status === 'done') return;
-    tw.status = i === idx ? 'traveling' : 'pending';
-    if (i >= idx) {
-      tw.arrivedAt = null;
-      tw.leftAt = null;
-      tw.actualDelay = null;
-    }
+    if (!tw || i === idx) return;
+    if (tw.status === 'traveling' || tw.status === 'at_client') tw.status = 'pending';
   });
 
+  S.trk.currentIdx = idx;
+  S.trk.wps[idx].status = 'traveling';
+  S.trk.wps[idx].arrivedAt = null;
+  S.trk.wps[idx].leftAt = null;
+  S.trk.wps[idx].actualDelay = null;
+
   const anchor = idx > 0 ? S.waypoints[idx - 1] : getBasePoint(S.startPt);
-  const projection = await recalcTrackingProjection(anchor, S.waypoints.slice(idx), {
+  const projection = await recalcTrackingProjection(anchor, getRemainingTrackableWaypoints(idx), {
     destination: getBasePoint(S.endPt),
     startLabel: idx > 0 ? S.waypoints[idx - 1].name : getBaseLabel(S.startPt),
     endLabel: getBaseLabel(S.endPt),
@@ -600,6 +781,79 @@ async function trkReopen(idx) {
   renderTrkPanel();
   saveStorage();
   notify('Parada reactivada', 'success');
+}
+
+async function trkCompleteNow(idx = S.trk.currentIdx) {
+  if (!S.trk.active || idx < 0 || idx >= S.waypoints.length) return;
+  const tw = S.trk.wps[idx];
+  if (!tw || tw.status === 'done') return;
+
+  const oldCurrentIdx = S.trk.currentIdx;
+  const oldCurrentTw = S.trk.wps[oldCurrentIdx];
+  const oldCurrentStatus = oldCurrentTw?.status || 'pending';
+  const now = Date.now();
+  const nowMinutes = nowMin();
+  const wp = S.waypoints[idx];
+
+  if (idx === oldCurrentIdx && S.trk.timerInterval) {
+    clearInterval(S.trk.timerInterval);
+    S.trk.timerInterval = null;
+  }
+
+  tw.status = 'done';
+  tw.arrivedAt = tw.arrivedAt || now;
+  tw.leftAt = now;
+  tw.actualDelay = idx === oldCurrentIdx && wp?.plannedArrival ? nowMinutes - t2m(wp.plannedArrival) : tw.actualDelay;
+  if (wp) {
+    if (!wp.plannedArrival) wp.plannedArrival = nowT();
+    wp.plannedDeparture = nowT();
+  }
+
+  let recalcContext;
+  if (idx === oldCurrentIdx) {
+    S.trk.currentIdx = getNextOpenTrackIndex(oldCurrentIdx + 1);
+    if (S.trk.currentIdx < S.trk.wps.length && S.trk.wps[S.trk.currentIdx].status === 'pending') {
+      S.trk.wps[S.trk.currentIdx].status = 'traveling';
+    }
+    if (oldCurrentStatus === 'at_client') {
+      recalcContext = {
+        anchor: wp,
+        startIdx: S.trk.currentIdx,
+        startLabel: wp?.name || getBaseLabel(S.startPt),
+        startMinOverride: nowMinutes
+      };
+    } else {
+      recalcContext = {
+        anchor: idx > 0 ? S.waypoints[idx - 1] : getBasePoint(S.startPt),
+        startIdx: S.trk.currentIdx,
+        startLabel: idx > 0 ? S.waypoints[idx - 1].name : getBaseLabel(S.startPt),
+        startMinOverride: nowMinutes
+      };
+    }
+  } else if (oldCurrentStatus === 'at_client') {
+    recalcContext = {
+      anchor: S.waypoints[oldCurrentIdx],
+      startIdx: oldCurrentIdx + 1,
+      startLabel: S.waypoints[oldCurrentIdx]?.name || getBaseLabel(S.startPt),
+      startMinOverride: nowMinutes
+    };
+  } else {
+    recalcContext = {
+      anchor: oldCurrentIdx > 0 ? S.waypoints[oldCurrentIdx - 1] : getBasePoint(S.startPt),
+      startIdx: oldCurrentIdx,
+      startLabel: oldCurrentIdx > 0 ? S.waypoints[oldCurrentIdx - 1].name : getBaseLabel(S.startPt),
+      startMinOverride: nowMinutes
+    };
+  }
+
+  await refreshTrackingRouteAfterMutation(recalcContext);
+  S.trk.delay = 0;
+  S.trk._prevDelay = 0;
+  addWPMarker(wp);
+  renderWPs();
+  renderTrkPanel();
+  saveStorage();
+  notify('Parada cerrada y ruta actualizada', 'success');
 }
 
 function startClientTimer(arrivedAt, dwellMin) {
@@ -652,6 +906,7 @@ function renderTrkPanel() {
     document.getElementById('trkCurrentAddr').textContent = `Fin: ${S.route?.endT || ''}`;
     document.getElementById('trkArrivedBtn').style.display = 'none';
     document.getElementById('trkLeftBtn').style.display = 'none';
+    document.getElementById('trkCloseNowBtn').style.display = 'none';
     document.getElementById('trkTimerBlock').style.display = 'none';
     document.getElementById('trkMapsLink').href = '#';
     document.getElementById('trkWazeLink').href = '#';
@@ -669,6 +924,7 @@ function renderTrkPanel() {
     document.getElementById('trkWazeLink').href = `https://waze.com/ul?ll=${wp.lat},${wp.lng}&navigate=yes`;
     document.getElementById('trkArrivedBtn').style.display = tw.status === 'traveling' ? '' : 'none';
     document.getElementById('trkLeftBtn').style.display = tw.status === 'at_client' ? '' : 'none';
+    document.getElementById('trkCloseNowBtn').style.display = tw.status === 'done' ? 'none' : '';
 
     if (isAt && tw.arrivedAt) {
       document.getElementById('trkTimerBlock').style.display = '';
@@ -723,6 +979,7 @@ function renderTrkItinerary() {
         </div>
       </div>
       ${isCur ? `<a href="https://www.google.com/maps/dir/?api=1&destination=${wp.lat},${wp.lng}&travelmode=driving" target="_blank" rel="noopener" style="font-size:.7rem;padding:4px 8px;background:#2563eb;color:#fff;border-radius:5px;text-decoration:none;white-space:nowrap;flex-shrink:0">Navegar</a>` : ''}
+      ${status !== 'done' ? `<button class="btn bg bi bsm" onclick="trkCompleteNow(${i})" type="button" title="Cerrar parada">✓</button>` : ''}
       ${status === 'done' ? `<button class="btn bg bi bsm" onclick="trkReopen(${i})" type="button" title="Reactivar parada">↺</button>` : ''}
     </div>`;
   }).join('');

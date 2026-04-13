@@ -5,7 +5,10 @@ function showTab(tab) {
     t.setAttribute('aria-selected', on ? 'true' : 'false');
   });
   document.querySelectorAll('.tc').forEach(c => c.classList.toggle('on', c.id === 'tab-' + tab));
-  if (tab === 'route') refreshRouteTimingIfNeeded();
+  if (tab === 'route') {
+    refreshRouteTimingIfNeeded();
+    void ensureRouteVisualization();
+  }
 }
 
 function notify(msg, type = '') {
@@ -47,6 +50,7 @@ function saveStorage() {
         lng: w.lng,
         name: w.name,
         dwell: w.dwell,
+        priority: normalizePriorityLevel(w.priority),
         openTime: w.openTime || null,
         closeTime: w.closeTime || null,
         openTime2: w.openTime2 || null,
@@ -66,7 +70,8 @@ function saveStorage() {
         totalWork: S.route.totalWork || 0,
         mode: S.route.mode || 'auto',
         startLabel: S.route.startLabel || getBaseLabel(S.startPt),
-        endLabel: S.route.endLabel || getBaseLabel(S.endPt)
+        endLabel: S.route.endLabel || getBaseLabel(S.endPt),
+        osrm: S.routeData?.osrm || null
       } : null,
       trk: S.trk.active ? {
         active: true,
@@ -85,6 +90,14 @@ function saveStorage() {
 }
 
 function saveTrkState() { saveStorage(); }
+
+function persistSessionSafely() {
+  try {
+    saveStorage();
+  } catch (e) {
+    console.error('persistSessionSafely:', e);
+  }
+}
 
 function rebuildItin() {
   if (!S.route || !S.waypoints.length) return;
@@ -114,6 +127,90 @@ function rebuildItin() {
   S.route.itin = itin;
 }
 
+function fitMapToActiveRoute() {
+  if (!S.map || !S.waypoints.length) return;
+  if (S.routeLayer && S.map.hasLayer(S.routeLayer)) {
+    S.map.fitBounds(S.routeLayer.getBounds(), { padding: [20, 20] });
+    return;
+  }
+
+  const origin = getBasePoint(S.startPt);
+  const destination = getBasePoint(S.endPt);
+  const pts = [...S.waypoints];
+  if (origin) pts.unshift(origin);
+  if (destination) pts.push(destination);
+  if (pts.length < 2) return;
+  S.map.fitBounds(L.latLngBounds(pts.map(p => [p.lat, p.lng])), { padding: [20, 20] });
+}
+
+function fitMapToWaypoints() {
+  if (!S.map || !S.waypoints.length) return;
+  const pts = S.waypoints.map(p => [p.lat, p.lng]);
+  if (pts.length > 1) {
+    S.map.fitBounds(L.latLngBounds(pts), { padding: [20, 20], maxZoom: 14 });
+    return;
+  }
+  S.map.setView(pts[0], 14);
+}
+
+function scheduleInitialMapFit() {
+  if (!S.map || !S.waypoints.length) return;
+  const runFit = () => {
+    S.map.invalidateSize();
+    fitMapToWaypoints();
+    if (S.route) void ensureRouteVisualization();
+  };
+  setTimeout(runFit, 0);
+  setTimeout(runFit, 180);
+}
+
+async function ensureRouteVisualization() {
+  if (!S.route || !S.waypoints.length || !S.map) return;
+  if (S.routeLayer && S.map.hasLayer(S.routeLayer)) return;
+
+  const origin = getBasePoint(S.startPt);
+  const destination = getBasePoint(S.endPt);
+  if (!origin || !destination) return;
+
+  const pts = [origin, ...S.waypoints, destination].filter(Boolean);
+  if (pts.length < 2) return;
+  if (S.routeData?.osrm?.geometry?.coordinates?.length) {
+    S._routeDrawErrorShown = false;
+    drawRoute(S.routeData.osrm.geometry);
+    fitMapToActiveRoute();
+    return;
+  }
+
+  try {
+    const osrm = await getOsrmRoute(pts);
+    if (osrm?.geometry?.coordinates?.length) {
+      if (!S.routeData) {
+        S.routeData = {
+          origin,
+          destination,
+          osrm,
+          startLabel: getBaseLabel(S.startPt),
+          endLabel: getBaseLabel(S.endPt)
+        };
+      } else {
+        S.routeData.osrm = osrm;
+      }
+      if (S.route) S.route.osrm = osrm;
+      S._routeDrawErrorShown = false;
+      drawRoute(osrm.geometry);
+      fitMapToActiveRoute();
+      saveStorage();
+      return;
+    }
+  } catch (e) {
+    console.error('ensureRouteVisualization:', e);
+  }
+  if (!S._routeDrawErrorShown) {
+    S._routeDrawErrorShown = true;
+    notify('No se ha podido dibujar la ruta en el mapa', 'error');
+  }
+}
+
 function loadStorage() {
   let raw = localStorage.getItem(LS_KEY);
   if (!raw) raw = localStorage.getItem('rr');
@@ -140,6 +237,7 @@ function loadStorage() {
       d.waypoints.forEach(w => {
         S.waypoints.push({
           ...w,
+          priority: normalizePriorityLevel(w.priority),
           openTime: parseTimeOrNull(w.openTime),
           closeTime: parseTimeOrNull(w.closeTime),
           openTime2: parseTimeOrNull(w.openTime2),
@@ -158,17 +256,19 @@ function loadStorage() {
       S.routeData = {
         origin: getBasePoint(S.startPt),
         destination: getBasePoint(S.endPt),
-        osrm: null,
+        osrm: d.route.osrm || null,
         startLabel: d.route.startLabel || getBaseLabel(S.startPt),
         endLabel: d.route.endLabel || getBaseLabel(S.endPt)
       };
       rebuildItin();
       renderRoute(S.route);
+      restoreRouteVisualization();
       if (S.route.itin) document.getElementById('trackBtn').style.display = 'flex';
     }
 
     const pts = [d.home, d.work, ...(d.waypoints || [])].filter(Boolean);
-    if (pts.length > 1) S.map.fitBounds(L.latLngBounds(pts.map(p => [p.lat, p.lng])), { padding: [40, 40] });
+    if (S.waypoints.length) scheduleInitialMapFit();
+    else if (pts.length > 1) S.map.fitBounds(L.latLngBounds(pts.map(p => [p.lat, p.lng])), { padding: [40, 40] });
     else if (pts.length === 1) S.map.setView([pts[0].lat, pts[0].lng], 13);
 
     const trk = d.trk;
@@ -188,8 +288,10 @@ function loadStorage() {
       const curTw = S.trk.wps[S.trk.currentIdx];
       const curWp = curTw ? S.waypoints.find(w => w.id === curTw.id) : null;
       if (curTw?.status === 'at_client' && curTw.arrivedAt && curWp) startClientTimer(curTw.arrivedAt, curWp.dwell);
+      restoreRouteVisualization();
       notify('Seguimiento restaurado ✓', 'success');
     } else if (S.waypoints.length) {
+      restoreRouteVisualization();
       notify(`Sesión restaurada · ${S.waypoints.length} puntos`, 'success');
     }
   } catch (e) {
@@ -213,5 +315,11 @@ document.getElementById('searchInput').addEventListener('keydown', e => { if (e.
 document.getElementById('urlInput').addEventListener('keydown', e => { if (e.key === 'Enter') parseUrl(); });
 document.getElementById('bizInput').addEventListener('keydown', e => { if (e.key === 'Enter') searchBusiness(); });
 document.getElementById('locInput').addEventListener('keydown', e => { if (e.key === 'Enter') searchLoc(); });
+
+window.addEventListener('pagehide', persistSessionSafely);
+window.addEventListener('beforeunload', persistSessionSafely);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') persistSessionSafely();
+});
 
 window.addEventListener('DOMContentLoaded', initMap);
