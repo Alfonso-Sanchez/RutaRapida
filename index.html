@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data: blob:; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com; img-src 'self' data: blob: file: https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org; connect-src 'self' file: https://nominatim.openstreetmap.org https://router.project-osrm.org https://api.allorigins.win https://corsproxy.io https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; font-src 'self' data: https://cdnjs.cloudflare.com; object-src 'none'; base-uri 'self'; upgrade-insecure-requests">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data: blob:; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com; img-src 'self' data: blob: file: https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org; connect-src 'self' file: https://nominatim.openstreetmap.org https://router.project-osrm.org https://api.allorigins.win https://corsproxy.io https://api.codetabs.com https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; font-src 'self' data: https://cdnjs.cloudflare.com; object-src 'none'; base-uri 'self'; upgrade-insecure-requests">
   <title>RutaRapida — Planificador de Rutas</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <link rel="stylesheet" href="style.css"/>
@@ -64,6 +64,14 @@
         </div>
       </div>
 
+      <div class="card">
+        <div class="ct">🏁 Punto final</div>
+        <div class="modes">
+          <div class="mbt on" id="ep-home" onclick="setEnd('home')">🏠<br>Casa</div>
+          <div class="mbt" id="ep-work" onclick="setEnd('work')">💼<br>Trabajo</div>
+        </div>
+      </div>
+
       <div class="card" style="font-size:.78rem;color:var(--gray);line-height:1.7">
         <div class="ct">ℹ️ Ayuda rápida</div>
         • <b>Clic en el mapa</b> para fijar ubicación o añadir puntos<br>
@@ -83,6 +91,21 @@
         </div>
         <div style="font-size:.7rem;color:var(--gray);margin-top:3px">
           Compatible: maps.app.goo.gl · maps.google.com · waze.com · lat,lng
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ct">🔄 Compartir ruta</div>
+        <div class="row import-export-row">
+          <button class="btn bp bfull" type="button" onclick="copyRouteShareText()">
+            <i class="fas fa-copy"></i> Copiar ruta
+          </button>
+          <button class="btn bg bfull" type="button" onclick="openImportRouteModal()">
+            <i class="fas fa-paste"></i> Pegar ruta
+          </button>
+        </div>
+        <div style="font-size:.72rem;color:var(--gray);margin-top:6px">
+          Copia un texto compacto y pégalo en el otro dispositivo.
         </div>
       </div>
 
@@ -378,6 +401,46 @@
       O cierra y haz <b>clic en el mapa</b> para fijar la posición
     </div>
     <button class="btn bg bfull" style="margin-top:9px" onclick="closeLocModal()">Cancelar</button>
+  </div>
+</div>
+
+<!-- ══ MODAL: Import route ══ -->
+<div class="overlay" id="importModal" style="display:none" onclick="if(event.target===this)closeImportModal()">
+  <div class="modal">
+    <h3>📥 Pegar ruta</h3>
+    <div id="importSummary" style="font-size:.84rem;line-height:1.6;color:var(--text);background:var(--bg);padding:10px;border-radius:8px">
+      Pega aquí el texto compartido de la ruta.
+    </div>
+    <label>Texto de ruta</label>
+    <textarea id="importRouteText" rows="5" placeholder="RR1:..." style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;font:inherit;resize:vertical"></textarea>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn bg" style="flex:1" type="button" onclick="pasteRouteFromClipboard()">
+        <i class="fas fa-clipboard"></i> Pegar del portapapeles
+      </button>
+      <button class="btn bp" style="flex:1" type="button" onclick="previewImportedRouteText()">
+        <i class="fas fa-eye"></i> Revisar
+      </button>
+    </div>
+    <label>Inicio de la ruta</label>
+    <div class="row">
+      <select id="importStartPt" aria-label="Inicio de la ruta importada">
+        <option value="home">Casa</option>
+        <option value="work">Trabajo</option>
+      </select>
+      <select id="importEndPt" aria-label="Fin de la ruta importada">
+        <option value="home">Casa</option>
+        <option value="work">Trabajo</option>
+      </select>
+    </div>
+    <div style="font-size:.72rem;color:var(--gray);margin-top:4px">
+      El primer selector es el inicio y el segundo el final.
+    </div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn bp" style="flex:1" type="button" onclick="applyImportedRoute()">
+        <i class="fas fa-download"></i> Importar
+      </button>
+      <button class="btn bg" type="button" onclick="closeImportModal()">Cancelar</button>
+    </div>
   </div>
 </div>
 

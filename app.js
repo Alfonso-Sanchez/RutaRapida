@@ -4,6 +4,7 @@
 const S = {
   home: null, work: null,
   startPt: 'home',
+  endPt: 'home',
   waypoints: [],
   schedMode: 'auto',
   route: null,
@@ -22,6 +23,7 @@ const S = {
   searchMarkers: [],   // markers shown for search results
   nid: 1,
   searchCache: {},
+  pendingImportRoute: null,
   sortable: null
 };
 
@@ -102,6 +104,16 @@ function esc(v) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function cleanPlaceText(raw) {
+  if (raw == null) return '';
+  const text = String(raw).replace(/\+/g, ' ').trim();
+  try {
+    return decodeURIComponent(text).replace(/\s+/g, ' ').trim();
+  } catch {
+    return text.replace(/\s+/g, ' ').trim();
+  }
 }
 
 function parseDwell(raw, fallback = 30) {
@@ -281,11 +293,27 @@ function updateBaseUI(type) {
   document.getElementById(sfx + 'Btn').classList.toggle('set', !!obj);
 }
 
+function getBasePoint(type) {
+  return type === 'work' ? S.work : S.home;
+}
+
+function getBaseLabel(type) {
+  return type === 'work' ? 'Trabajo' : 'Casa';
+}
+
 function setStart(type) {
   S.startPt = type;
   invalidateRoute();
   document.getElementById('sp-home').classList.toggle('on', type === 'home');
   document.getElementById('sp-work').classList.toggle('on', type === 'work');
+  saveStorage();
+}
+
+function setEnd(type) {
+  S.endPt = type;
+  invalidateRoute();
+  document.getElementById('ep-home').classList.toggle('on', type === 'home');
+  document.getElementById('ep-work').classList.toggle('on', type === 'work');
   saveStorage();
 }
 
@@ -773,7 +801,7 @@ function pickLoc(lat, lng, i) {
 //  URL PARSING (Google Maps / Waze)
 // ═══════════════════════════════════════════════
 async function parseUrl() {
-  const url = document.getElementById('urlInput').value.trim();
+  const url = unwrapProxyUrl(document.getElementById('urlInput').value.trim());
   if (!url) { notify('Pega una URL primero', 'error'); return; }
 
   notify('Procesando URL…');
@@ -790,7 +818,7 @@ async function parseUrl() {
       notify('Buscando por nombre…');
       const res = await nominatim(coords.q);
       if (res.length) {
-        coords = { lat: parseFloat(res[0].lat), lng: parseFloat(res[0].lon), name: res[0].display_name.split(',')[0] };
+        coords = { lat: parseFloat(res[0].lat), lng: parseFloat(res[0].lon), name: cleanPlaceText(res[0].display_name.split(',')[0]) };
       } else {
         notify('No se encontraron coordenadas. Abre el enlace en Google Maps y pega la URL larga del navegador.', 'error');
         return;
@@ -819,13 +847,32 @@ function isShortUrl(url) {
   return /goo\.gl|maps\.app\.goo\.gl|bit\.ly/i.test(url);
 }
 
+function unwrapProxyUrl(url) {
+  if (!url || typeof url !== 'string') return url;
+  try {
+    const u = new URL(url);
+    if (/api\.codetabs\.com$/i.test(u.hostname)) {
+      const quest = u.searchParams.get('quest');
+      if (quest) return decodeURIComponent(quest);
+    }
+  } catch {}
+  return url;
+}
+
 function parseFreeCoords(input) {
   if (!input || typeof input !== 'string') return null;
   const s = input.trim();
 
   const inRange = (lat, lng) => Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
 
-  let m = s.match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
+  let m = s.match(/^\[?\s*(-?\d+(?:[.,]\d+)?)\s*[,;]\s*(-?\d+(?:[.,]\d+)?)\s*\]?$/);
+  if (m) {
+    const lat = parseFloat(m[1].replace(',', '.'));
+    const lng = parseFloat(m[2].replace(',', '.'));
+    if (inRange(lat, lng)) return { lat, lng };
+  }
+
+  m = s.match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
   if (m) {
     const lat = parseFloat(m[1]);
     const lng = parseFloat(m[2]);
@@ -853,6 +900,17 @@ function parseFreeCoords(input) {
   return null;
 }
 
+function parseEmbeddedCoordPair(text) {
+  if (!text || typeof text !== 'string') return null;
+  const m = text.match(/(-?\d{1,2}\.\d{4,})[,\s/]+(-?\d{1,3}\.\d{4,})/);
+  if (!m) return null;
+  const lat = parseFloat(m[1]);
+  const lng = parseFloat(m[2]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return { lat, lng };
+}
+
 function extractCoords(url) {
   if (!url || typeof url !== 'string') return null;
   const free = parseFreeCoords(url);
@@ -874,7 +932,7 @@ function extractCoords(url) {
   let name = '';
   const placeM = url.match(/\/place\/([^/@?]+)/);
   if (placeM) {
-    name = decodeURIComponent(placeM[1].replace(/\+/g, ' ')).split(',')[0].trim();
+    name = cleanPlaceText(placeM[1]).split(',')[0].trim();
   }
 
   // PRIORITY 1: Google Maps data encoding !3d{lat}!4d{lng}
@@ -896,6 +954,8 @@ function extractCoords(url) {
   if (m) return { lat: +m[1], lng: +m[2], name };
   m = url.match(/[?&]destination=(-?\d+\.\d+),(-?\d+\.\d+)/);
   if (m) return { lat: +m[1], lng: +m[2], name };
+  m = url.match(/[?&](?:query|query_place|dest|daddr)=(-?\d+\.\d+),(-?\d+\.\d+)/);
+  if (m) return { lat: +m[1], lng: +m[2], name };
 
   // PRIORITY 3: Waze latlng / navigate params
   m = url.match(/[?&]latlng=(-?\d+\.\d+),(-?\d+\.\d+)/);
@@ -912,7 +972,10 @@ function extractCoords(url) {
   if (name) return { q: name, name };
 
   m = url.match(/[?&]q=([^&]+)/);
-  if (m && !/^\d/.test(m[1])) return { q: decodeURIComponent(m[1].replace(/\+/g, ' ')) };
+  if (m && !/^\d/.test(m[1])) return { q: cleanPlaceText(m[1]) };
+
+  const embedded = parseEmbeddedCoordPair(decodeURIComponent(url));
+  if (embedded) return { ...embedded, name };
 
   return null;
 }
@@ -927,6 +990,7 @@ function findMapsUrlInText(text) {
 }
 
 async function resolveShort(url) {
+  const cleanUrl = unwrapProxyUrl(url);
   const tryExtract = (rawUrl, body) => {
     const fromUrl = extractCoords(rawUrl);
     if (fromUrl) return fromUrl;
@@ -940,9 +1004,10 @@ async function resolveShort(url) {
   };
 
   const proxies = [
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-    `https://corsproxy.io/?${encodeURIComponent(url)}`,
-    `https://r.jina.ai/http://${url.replace(/^https?:\/\//i, '')}`
+    `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(`https://unshorten.me/s/${cleanUrl}`)}`,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(cleanUrl)}`,
+    `https://corsproxy.io/?${encodeURIComponent(cleanUrl)}`,
+    `https://r.jina.ai/http://${cleanUrl.replace(/^https?:\/\//i, '')}`
   ];
 
   for (const p of proxies) {
@@ -955,7 +1020,7 @@ async function resolveShort(url) {
 
   // Fallback: algunos enlaces cortos traen querystring con un destino embebido.
   try {
-    const u = new URL(url);
+    const u = new URL(cleanUrl);
     const nested = u.searchParams.get('link') || u.searchParams.get('url') || u.searchParams.get('q');
     if (nested) {
       const dec = decodeURIComponent(nested);
@@ -967,10 +1032,167 @@ async function resolveShort(url) {
   return null;
 }
 
+function buildRouteExportSnapshot() {
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    startPt: S.startPt,
+    endPt: S.endPt,
+    home: S.home ? { ...S.home } : null,
+    work: S.work ? { ...S.work } : null,
+    waypoints: S.waypoints.map(w => ({
+      name: w.name,
+      lat: w.lat,
+      lng: w.lng,
+      dwell: w.dwell,
+      desiredArrival: w.desiredArrival || null,
+      openTime: w.openTime || null,
+      closeTime: w.closeTime || null,
+      openTime2: w.openTime2 || null,
+      closeTime2: w.closeTime2 || null,
+      openingHoursRaw: w.openingHoursRaw || null
+    }))
+  };
+}
+
+function encodeRouteShareText(data) {
+  return `RR1:${btoa(unescape(encodeURIComponent(JSON.stringify(data))))}`;
+}
+
+function decodeRouteShareText(raw) {
+  if (!raw || typeof raw !== 'string') throw new Error('empty');
+  const text = raw.trim();
+  const payload = text.startsWith('RR1:') ? text.slice(4) : text;
+  return JSON.parse(decodeURIComponent(escape(atob(payload))));
+}
+
+async function copyRouteShareText() {
+  if (!S.waypoints.length) {
+    notify('No hay puntos para copiar', 'error');
+    return;
+  }
+  const text = encodeRouteShareText(buildRouteExportSnapshot());
+  try {
+    await navigator.clipboard.writeText(text);
+    notify('Ruta copiada. Ya puedes pegarla en el móvil.', 'success');
+  } catch {
+    openImportRouteModal(text);
+    notify('No se pudo copiar automáticamente. Copia el texto manualmente.', 'error');
+  }
+}
+
+function openImportRouteModal(prefill = '') {
+  const input = document.getElementById('importRouteText');
+  if (input) input.value = prefill;
+  document.getElementById('importSummary').innerHTML = 'Pega aquí el texto compartido de la ruta.';
+  document.getElementById('importModal').style.display = 'flex';
+}
+
+function loadPendingImportedRoute(data) {
+  if (!Array.isArray(data?.waypoints) || !data.waypoints.length) {
+    throw new Error('invalid-route');
+  }
+  S.pendingImportRoute = data;
+  document.getElementById('importStartPt').value = data.startPt === 'work' ? 'work' : 'home';
+  document.getElementById('importEndPt').value = data.endPt === 'work' ? 'work' : 'home';
+  document.getElementById('importSummary').innerHTML =
+    `<b>${data.waypoints.length}</b> punto(s) listos para importar.<br>` +
+    `Origen sugerido: <b>${esc(getBaseLabel(data.startPt))}</b> · ` +
+    `Destino sugerido: <b>${esc(getBaseLabel(data.endPt))}</b>`;
+}
+
+function previewImportedRouteText() {
+  const raw = document.getElementById('importRouteText')?.value || '';
+  try {
+    loadPendingImportedRoute(decodeRouteShareText(raw));
+    notify('Ruta lista para importar', 'success');
+  } catch (e) {
+    console.error('previewImportedRouteText:', e);
+    notify('El texto pegado no tiene un formato de ruta válido', 'error');
+  }
+}
+
+async function pasteRouteFromClipboard() {
+  try {
+    const text = await navigator.clipboard.readText();
+    const input = document.getElementById('importRouteText');
+    if (input) input.value = text || '';
+    previewImportedRouteText();
+  } catch (e) {
+    console.error('pasteRouteFromClipboard:', e);
+    notify('No se pudo leer el portapapeles. Pega el texto manualmente.', 'error');
+  }
+}
+
+function closeImportModal() {
+  document.getElementById('importModal').style.display = 'none';
+  const input = document.getElementById('importRouteText');
+  if (input) input.value = '';
+  S.pendingImportRoute = null;
+}
+
+function applyImportedRoute() {
+  let data = S.pendingImportRoute;
+  if (!data) {
+    try {
+      data = decodeRouteShareText(document.getElementById('importRouteText')?.value || '');
+      loadPendingImportedRoute(data);
+    } catch {
+      notify('Pega primero un texto de ruta válido', 'error');
+      return;
+    }
+  }
+  if (!data?.waypoints?.length) {
+    notify('Pega primero un texto de ruta válido', 'error');
+    return;
+  }
+  const startPt = document.getElementById('importStartPt').value === 'work' ? 'work' : 'home';
+  const endPt = document.getElementById('importEndPt').value === 'work' ? 'work' : 'home';
+
+  if (S.waypoints.length && !confirm('Se sustituirá la ruta actual. ¿Continuar?')) return;
+
+  if (!getBasePoint(startPt) && data[startPt]) setBaseLoc(startPt, data[startPt].lat, data[startPt].lng, data[startPt].name);
+  if (!getBasePoint(endPt) && data[endPt]) setBaseLoc(endPt, data[endPt].lat, data[endPt].lng, data[endPt].name);
+
+  if (!getBasePoint(startPt) || !getBasePoint(endPt)) {
+    notify('Configura Casa y Trabajo antes de importar esta combinación de inicio y fin', 'error');
+    return;
+  }
+
+  if (S.trk.active) stopTracking();
+  S.waypoints.forEach(w => rmMk('wp_' + w.id));
+  S.waypoints = [];
+  S.pendingCoords = null;
+
+  data.waypoints.forEach(w => addWP({
+    lat: parseFloat(w.lat),
+    lng: parseFloat(w.lng),
+    name: w.name,
+    dwell: w.dwell,
+    desiredArrival: w.desiredArrival,
+    openTime: w.openTime,
+    closeTime: w.closeTime,
+    openTime2: w.openTime2,
+    closeTime2: w.closeTime2,
+    openingHoursRaw: w.openingHoursRaw,
+    silent: true
+  }));
+
+  setStart(startPt);
+  setEnd(endPt);
+  invalidateRoute();
+  renderWPs();
+  saveStorage();
+  closeImportModal();
+  S.pendingImportRoute = null;
+  showTab('points');
+  notify('Ruta importada. Ya puedes recalcular en este dispositivo.', 'success');
+}
+
 // ═══════════════════════════════════════════════
 //  WAYPOINT MANAGEMENT
 // ═══════════════════════════════════════════════
-function addWP({ lat, lng, name, dwell, desiredArrival, openTime, closeTime, openTime2, closeTime2, openingHoursRaw }) {
+function addWP({ lat, lng, name, dwell, desiredArrival, openTime, closeTime, openTime2, closeTime2, openingHoursRaw, silent }) {
   const wp = {
     id: S.nid++, lat, lng,
     name: name || `Cliente ${S.nid}`,
@@ -987,9 +1209,11 @@ function addWP({ lat, lng, name, dwell, desiredArrival, openTime, closeTime, ope
   S.waypoints.push(wp);
   invalidateRoute();
   addWPMarker(wp);
-  renderWPs();
-  saveStorage();
-  showTab('points');
+  if (!silent) {
+    renderWPs();
+    saveStorage();
+    showTab('points');
+  }
   return wp;
 }
 
@@ -1123,6 +1347,7 @@ function renderWPs() {
       <div class="wp-acts">
         ${!S.trk.active ? `<button class="btn bg bi bsm" onclick="editWP(${wp.id})" title="Editar"><i class="fas fa-edit"></i></button>
         <button class="btn bd bi bsm" onclick="removeWP(${wp.id})" title="Eliminar"><i class="fas fa-trash"></i></button>` : ''}
+        ${S.trk.active && done ? `<button class="btn bg bi bsm" onclick="trkReopen(${i})" title="Reactivar parada">↺</button>` : ''}
       </div>
     </div>`;
   }).join('');
@@ -1389,13 +1614,23 @@ async function getOsrmRoute(pts) {
   } catch { return null; }
 }
 
+function getRouteEndpoints() {
+  return {
+    origin: getBasePoint(S.startPt),
+    destination: getBasePoint(S.endPt),
+    startLabel: getBaseLabel(S.startPt),
+    endLabel: getBaseLabel(S.endPt)
+  };
+}
+
 // ═══════════════════════════════════════════════
 //  SCHEDULE CALCULATION
 // ═══════════════════════════════════════════════
 async function calcRoute() {
   if (!S.waypoints.length) { notify('Añade al menos un punto', 'error'); return; }
-  const origin = S.startPt==='home' ? S.home : S.work;
+  const { origin, destination, startLabel, endLabel } = getRouteEndpoints();
   if (!origin) { notify(`Establece ${S.startPt==='home'?'la casa':'el trabajo'} primero`, 'error'); showTab('setup'); return; }
+  if (!destination) { notify(`Establece ${S.endPt==='home'?'la casa':'el trabajo'} para el final`, 'error'); showTab('setup'); return; }
 
   const btn = document.getElementById('calcBtn');
   btn.innerHTML = '<span class="spin"></span> Calculando…'; btn.disabled = true;
@@ -1411,15 +1646,15 @@ async function calcRoute() {
     const optimizedWaypoints = await getOptimizedWaypoints(origin, S.waypoints);
     S.waypoints = optimizedWaypoints;
     renderWPs();
-    const allPts = [origin, ...optimizedWaypoints, origin];
+    const allPts = [origin, ...optimizedWaypoints, destination];
 
     notify('Obteniendo ruta real (OSRM)…');
     const osrm = await getOsrmRoute(allPts);
     if (!osrm) notify('Sin conexión a OSRM. Usando estimación lineal.', 'error');
 
-    const result = buildSchedule(optimizedWaypoints, origin, sc, osrm);
+    const result = buildSchedule(optimizedWaypoints, origin, sc, osrm, { destination, startLabel, endLabel });
     S.route = result;
-    S.routeData = { origin, osrm };
+    S.routeData = { origin, destination, osrm, startLabel, endLabel };
 
     renderRoute(result);
     if (osrm) drawRoute(osrm.geometry);
@@ -1438,9 +1673,12 @@ async function calcRoute() {
   }
 }
 
-function buildSchedule(wps, origin, sc, osrm) {
+function buildSchedule(wps, origin, sc, osrm, opts = {}) {
+  const destination = opts.destination || origin;
+  const startLabel = opts.startLabel || getBaseLabel(S.startPt);
+  const endLabel = opts.endLabel || getBaseLabel(S.endPt);
   let mode = sc.mode;
-  const now = nowMin();
+  const now = Number.isFinite(opts.startMinOverride) ? opts.startMinOverride : nowMin();
   const totalDwell = wps.reduce((s,w) => s+w.dwell, 0);
   const morningDur = sc.mE - sc.mS;
   const afternoonDur = sc.aE - sc.aS;
@@ -1448,7 +1686,7 @@ function buildSchedule(wps, origin, sc, osrm) {
   const contDur = sc.cH * 60;
 
   // Build segment durations & distances
-  const allPts = [origin, ...wps, origin];
+  const allPts = [origin, ...wps, destination];
   let segDur = [], segDist = [];
   if (osrm?.legs) {
     segDur = osrm.legs.map(l => Math.round(l.duration/60));
@@ -1473,11 +1711,11 @@ function buildSchedule(wps, origin, sc, osrm) {
     else mode = 'split';
   }
 
-  const effectiveStart = getEffectiveStartMin(sc, mode, now);
+  const effectiveStart = Number.isFinite(opts.startMinOverride) ? opts.startMinOverride : getEffectiveStartMin(sc, mode, now);
   const itin = [];
   let cur = effectiveStart;
 
-  itin.push({ type:'start', name: origin===S.home?'Casa':'Trabajo', time:m2t(cur), icon:origin===S.home?'🏠':'💼', color:'#2563eb' });
+  itin.push({ type:'start', name: startLabel, time:m2t(cur), icon:S.startPt==='home'?'🏠':'💼', color:'#2563eb' });
 
   let usedBreak = mode !== 'split' || cur >= sc.aS;
 
@@ -1508,7 +1746,7 @@ function buildSchedule(wps, origin, sc, osrm) {
       }
     }
 
-    itin.push({ type:'travel', from: i===0?(origin===S.home?'Casa':'Trabajo'):wps[i-1].name, to:wp.name, dur:travel, dist:segDist[i] });
+    itin.push({ type:'travel', from: i===0 ? startLabel : wps[i-1].name, to:wp.name, dur:travel, dist:segDist[i] });
 
     const depart = arrival + wp.dwell;
     if (!wp.desiredArrival && !wp.scheduleConflict) {
@@ -1528,9 +1766,9 @@ function buildSchedule(wps, origin, sc, osrm) {
   // Return
   const retDur = segDur[wps.length] || 0;
   const retDist = segDist[wps.length] || 0;
-  if (retDur) itin.push({ type:'travel', from:wps[wps.length-1]?.name||'Inicio', to:origin===S.home?'Casa':'Trabajo', dur:retDur, dist:retDist });
+  if (retDur) itin.push({ type:'travel', from:wps[wps.length-1]?.name||startLabel, to:endLabel, dur:retDur, dist:retDist });
   const endT = cur + retDur;
-  itin.push({ type:'end', name:origin===S.home?'Casa':'Trabajo', time:m2t(endT), icon:origin===S.home?'🏠':'💼', color:'#16a34a' });
+  itin.push({ type:'end', name:endLabel, time:m2t(endT), icon:S.endPt==='home'?'🏠':'💼', color:'#16a34a' });
 
   const totalDist = segDist.reduce((s,d)=>s+d,0);
   return {
@@ -1539,6 +1777,8 @@ function buildSchedule(wps, origin, sc, osrm) {
     endT: m2t(endT),
     effectiveStart,
     plannedFromNow: now,
+    startLabel,
+    endLabel,
     segDur: [...segDur],
     segDist: [...segDist]
   };
@@ -1563,7 +1803,11 @@ function refreshRouteTimingIfNeeded() {
   const sc = getSched();
   if (validateSched(sc)) return;
 
-  const refreshed = buildSchedule(S.waypoints, S.routeData.origin, sc, S.routeData.osrm);
+  const refreshed = buildSchedule(S.waypoints, S.routeData.origin, sc, S.routeData.osrm, {
+    destination: S.routeData.destination || S.routeData.origin,
+    startLabel: S.routeData.startLabel || getBaseLabel(S.startPt),
+    endLabel: S.routeData.endLabel || getBaseLabel(S.endPt)
+  });
   if (refreshed.startT === S.route.startT && refreshed.endT === S.route.endT) return;
 
   S.route = refreshed;
@@ -1641,12 +1885,69 @@ function drawLines(pts) {
 
 // Estados por waypoint: 'pending' | 'traveling' | 'at_client' | 'done'
 
+async function recalcTrackingProjection(anchor, remainingWps, opts = {}) {
+  const destination = opts.destination || getBasePoint(S.endPt) || anchor;
+  const sc = getSched();
+  if (validateSched(sc)) return null;
+
+  const pts = [anchor, ...remainingWps, destination].filter(Boolean);
+  const osrm = pts.length > 1 ? await getOsrmRoute(pts) : null;
+  return buildSchedule(remainingWps, anchor, sc, osrm, {
+    destination,
+    startLabel: opts.startLabel || getBaseLabel(S.startPt),
+    endLabel: opts.endLabel || getBaseLabel(S.endPt),
+    startMinOverride: Number.isFinite(opts.startMinOverride) ? opts.startMinOverride : nowMin()
+  });
+}
+
+function applyProjectionToRemaining(startIdx, projection) {
+  if (!projection || !S.route) return;
+  const steps = projection.itin.filter(step => step.type === 'wp');
+  steps.forEach((step, offset) => {
+    const wp = S.waypoints[startIdx + offset];
+    if (!wp) return;
+    wp.plannedArrival = m2t(step.arrival);
+    wp.plannedDeparture = m2t(step.depart);
+    wp.scheduleConflict = step.wp.scheduleConflict || null;
+  });
+
+  const completedDwell = S.waypoints
+    .slice(0, startIdx)
+    .reduce((sum, wp) => sum + (parseDwell(wp.dwell, 0) || 0), 0);
+  S.route.endT = projection.endT;
+  S.route.totalDist = projection.totalDist;
+  S.route.totalTravel = projection.totalTravel;
+  S.route.totalDwell = completedDwell + steps.reduce((sum, step) => sum + step.wp.dwell, 0);
+  S.route.totalWork = S.route.totalTravel + S.route.totalDwell;
+  S.route.endLabel = projection.endLabel || getBaseLabel(S.endPt);
+  rebuildItin();
+}
+
 function toggleTracking() {
   S.trk.active ? stopTracking() : startTracking();
 }
 
-function startTracking() {
+async function startTracking() {
   if (!S.route) { notify('Calcula la ruta primero', 'error'); return; }
+  const { origin, destination, startLabel, endLabel } = getRouteEndpoints();
+  if (!origin || !destination) {
+    notify('Revisa Casa y Trabajo antes de iniciar la ruta', 'error');
+    showTab('setup');
+    return;
+  }
+
+  const refreshed = await recalcTrackingProjection(origin, [...S.waypoints], {
+    destination,
+    startLabel,
+    endLabel,
+    startMinOverride: nowMin()
+  });
+  if (refreshed) {
+    S.route = refreshed;
+    S.routeData = { origin, destination, osrm: null, startLabel, endLabel };
+    renderRoute(refreshed);
+    renderWPs();
+  }
 
   // Inicializar estado por waypoint
   S.trk.active    = true;
@@ -1688,7 +1989,7 @@ function stopTracking() {
 }
 
 // Usuario pulsó "He llegado"
-function trkArrived() {
+async function trkArrived() {
   const tw = S.trk.wps[S.trk.currentIdx];
   const wp = S.waypoints.find(w => w.id === tw?.id);
   if (!tw || !wp || tw.status === 'at_client') return;
@@ -1701,9 +2002,17 @@ function trkArrived() {
   const actualMin  = nowMin();
   tw.actualDelay   = actualMin - plannedMin;
   S.trk.delay      = tw.actualDelay;
+  wp.plannedArrival = nowT();
+  wp.plannedDeparture = m2t(actualMin + wp.dwell);
 
-  // Propagar retraso a siguientes waypoints
-  propagateDelay(S.trk.currentIdx, tw.actualDelay);
+  const remaining = S.waypoints.slice(S.trk.currentIdx + 1);
+  const projection = await recalcTrackingProjection(wp, remaining, {
+    destination: getBasePoint(S.endPt),
+    startLabel: wp.name,
+    endLabel: getBaseLabel(S.endPt),
+    startMinOverride: actualMin + wp.dwell
+  });
+  applyProjectionToRemaining(S.trk.currentIdx + 1, projection);
 
   // Iniciar timer de tiempo en cliente
   startClientTimer(tw.arrivedAt, wp.dwell);
@@ -1714,7 +2023,7 @@ function trkArrived() {
 }
 
 // Usuario pulsó "He salido"
-function trkLeft() {
+async function trkLeft() {
   const tw = S.trk.wps[S.trk.currentIdx];
   const wp = S.waypoints.find(w => w.id === tw?.id);
   if (!tw || !wp || tw.status !== 'at_client') return;
@@ -1729,13 +2038,22 @@ function trkLeft() {
   const actualDepMin  = nowMin();
   const newDelay      = actualDepMin - plannedDepMin;
   S.trk.delay         = newDelay;
-  propagateDelay(S.trk.currentIdx, newDelay);
+  wp.plannedDeparture = nowT();
 
   // Avanzar al siguiente waypoint
   S.trk.currentIdx++;
   if (S.trk.currentIdx < S.trk.wps.length) {
     S.trk.wps[S.trk.currentIdx].status = 'traveling';
   }
+
+  const remaining = S.waypoints.slice(S.trk.currentIdx);
+  const projection = await recalcTrackingProjection(wp, remaining, {
+    destination: getBasePoint(S.endPt),
+    startLabel: wp.name,
+    endLabel: getBaseLabel(S.endPt),
+    startMinOverride: actualDepMin
+  });
+  applyProjectionToRemaining(S.trk.currentIdx, projection);
 
   // Actualizar marker del completado a verde
   addWPMarker(wp);
@@ -1750,19 +2068,36 @@ function trkLeft() {
   }
 }
 
-function propagateDelay(fromIdx, delayMin) {
-  const delta = delayMin - (S.trk._prevDelay || 0);
-  S.trk._prevDelay = delayMin;
-  for (let i = fromIdx + 1; i < S.waypoints.length; i++) {
-    const wp = S.waypoints[i];
-    if (wp.plannedArrival)   wp.plannedArrival   = m2t(t2m(wp.plannedArrival)   + delta);
-    if (wp.plannedDeparture) wp.plannedDeparture = m2t(t2m(wp.plannedDeparture) + delta);
-  }
-  if (S.route) {
-    S.route.endT = m2t(t2m(S.route.endT) + delta);
-    const el = document.getElementById('sEnd');
-    if (el) { el.textContent = S.route.endT; el.style.color = delayMin > 5 ? '#dc2626' : delayMin < -5 ? '#16a34a' : '#2563eb'; }
-  }
+async function trkReopen(idx) {
+  if (!S.trk.active || idx < 0 || idx >= S.waypoints.length) return;
+  if (S.trk.timerInterval) { clearInterval(S.trk.timerInterval); S.trk.timerInterval = null; }
+
+  S.trk.currentIdx = idx;
+  S.trk.wps.forEach((tw, i) => {
+    if (i < idx && tw.status === 'done') return;
+    tw.status = i === idx ? 'traveling' : 'pending';
+    if (i >= idx) {
+      tw.arrivedAt = null;
+      tw.leftAt = null;
+      tw.actualDelay = null;
+    }
+  });
+
+  const anchor = idx > 0 ? S.waypoints[idx - 1] : getBasePoint(S.startPt);
+  const projection = await recalcTrackingProjection(anchor, S.waypoints.slice(idx), {
+    destination: getBasePoint(S.endPt),
+    startLabel: idx > 0 ? S.waypoints[idx - 1].name : getBaseLabel(S.startPt),
+    endLabel: getBaseLabel(S.endPt),
+    startMinOverride: nowMin()
+  });
+  applyProjectionToRemaining(idx, projection);
+  S.trk.delay = 0;
+  S.trk._prevDelay = 0;
+  S.waypoints.forEach(wp => addWPMarker(wp));
+  renderWPs();
+  renderTrkPanel();
+  saveStorage();
+  notify('Parada reactivada', 'success');
 }
 
 function startClientTimer(arrivedAt, dwellMin) {
@@ -1833,8 +2168,7 @@ function renderTrkPanel() {
     document.getElementById('trkCurrentAddr').textContent  =
       `${wp.lat.toFixed(5)}, ${wp.lng.toFixed(5)}`;
     document.getElementById('trkPlanned').textContent      = wp.plannedArrival  || '—';
-    document.getElementById('trkEstimated').textContent    = delay === 0 ? (wp.plannedArrival||'—')
-      : (wp.plannedArrival ? m2t(t2m(wp.plannedArrival)) : '—');
+    document.getElementById('trkEstimated').textContent    = wp.plannedArrival || '—';
     document.getElementById('trkDwell').textContent        = fmtHM(wp.dwell);
 
     // Navigation links
@@ -1910,6 +2244,7 @@ function renderTrkItinerary() {
         target="_blank" rel="noopener"
         style="font-size:.7rem;padding:4px 8px;background:#2563eb;color:#fff;border-radius:5px;
           text-decoration:none;white-space:nowrap;flex-shrink:0">Navegar</a>` : ''}
+      ${status === 'done' ? `<button class="btn bg bi bsm" onclick="trkReopen(${i})" type="button" title="Reactivar parada">↺</button>` : ''}
     </div>`;
   }).join('');
 }
@@ -1957,6 +2292,7 @@ function saveStorage() {
       home:      S.home,
       work:      S.work,
       startPt:   S.startPt,
+      endPt:     S.endPt,
       nid:       S.nid,
       schedMode: S.schedMode,
       sched: {
@@ -1992,7 +2328,9 @@ function saveStorage() {
         totalTravel: S.route.totalTravel || 0,
         totalDwell:  S.route.totalDwell  || 0,
         totalWork:   S.route.totalWork   || 0,
-        mode:        S.route.mode        || 'auto'
+        mode:        S.route.mode        || 'auto',
+        startLabel:  S.route.startLabel  || getBaseLabel(S.startPt),
+        endLabel:    S.route.endLabel    || getBaseLabel(S.endPt)
       } : null,
       // Estado de seguimiento (dentro del mismo blob — nunca se desincroniza)
       trk: S.trk.active ? {
@@ -2017,25 +2355,28 @@ function saveTrkState() { saveStorage(); }
 // Reconstruye el itinerario desde los waypoints guardados (sin OSRM)
 function rebuildItin() {
   if (!S.route || !S.waypoints.length) return;
-  const origin = S.startPt === 'home' ? S.home : S.work;
-  if (!origin) return;
+  const origin = getBasePoint(S.startPt);
+  const destination = getBasePoint(S.endPt);
+  if (!origin || !destination) return;
+  const startLabel = S.route.startLabel || getBaseLabel(S.startPt);
+  const endLabel = S.route.endLabel || getBaseLabel(S.endPt);
 
   const itin = [];
-  itin.push({ type:'start', name: origin===S.home?'Casa':'Trabajo', time: S.route.startT, icon: origin===S.home?'🏠':'💼', color:'#2563eb' });
+  itin.push({ type:'start', name: startLabel, time: S.route.startT, icon: S.startPt === 'home' ? '🏠' : '💼', color:'#2563eb' });
 
   let prevDep = S.route.startT;
   S.waypoints.forEach((wp, i) => {
     if (!wp.plannedArrival) return;
     const travelMin = Math.max(0, t2m(wp.plannedArrival) - t2m(prevDep));
-    itin.push({ type:'travel', from: i===0?(origin===S.home?'Casa':'Trabajo'):S.waypoints[i-1].name, to: wp.name, dur: travelMin, dist: 0 });
+    itin.push({ type:'travel', from: i===0 ? startLabel : S.waypoints[i-1].name, to: wp.name, dur: travelMin, dist: 0 });
     itin.push({ type:'wp', wp, arrival: t2m(wp.plannedArrival), depart: t2m(wp.plannedDeparture||wp.plannedArrival), wpIdx: i+1 });
     prevDep = wp.plannedDeparture || wp.plannedArrival;
   });
 
   const retMin = Math.max(0, t2m(S.route.endT) - t2m(prevDep));
   const last = S.waypoints.filter(w=>w.plannedArrival).slice(-1)[0];
-  if (last) itin.push({ type:'travel', from: last.name, to: origin===S.home?'Casa':'Trabajo', dur: retMin, dist: 0 });
-  itin.push({ type:'end', name: origin===S.home?'Casa':'Trabajo', time: S.route.endT, icon: origin===S.home?'🏠':'💼', color:'#16a34a' });
+  if (last) itin.push({ type:'travel', from: last.name, to: endLabel, dur: retMin, dist: 0 });
+  itin.push({ type:'end', name: endLabel, time: S.route.endT, icon: S.endPt === 'home' ? '🏠' : '💼', color:'#16a34a' });
 
   S.route.itin = itin;
 }
@@ -2054,6 +2395,7 @@ function loadStorage() {
     if (d.home)      { S.home = d.home; updateBaseUI('home'); setMk('home', d.home.lat, d.home.lng, '🏠', '#2563eb'); }
     if (d.work)      { S.work = d.work; updateBaseUI('work'); setMk('work', d.work.lat, d.work.lng, '💼', '#7c3aed'); }
     if (d.startPt)   setStart(d.startPt);
+    if (d.endPt)     setEnd(d.endPt);
     if (d.nid)       S.nid = d.nid;
     if (d.schedMode) setMode(d.schedMode);
     if (d.sched) {
@@ -2084,6 +2426,13 @@ function loadStorage() {
     // ── 3. Ruta (reconstruir itin desde waypoints, sin OSRM) ──
     if (d.route) {
       S.route = { ...d.route };
+      S.routeData = {
+        origin: getBasePoint(S.startPt),
+        destination: getBasePoint(S.endPt),
+        osrm: null,
+        startLabel: d.route.startLabel || getBaseLabel(S.startPt),
+        endLabel: d.route.endLabel || getBaseLabel(S.endPt)
+      };
       rebuildItin();          // reconstruye itin desde plannedArrival/plannedDeparture
       renderRoute(S.route);   // renderiza resumen + itinerario (no-op si itin no disponible)
       if (S.route.itin) document.getElementById('trackBtn').style.display = 'flex';
