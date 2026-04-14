@@ -527,7 +527,8 @@ function dedupeBizResults(list) {
 async function nominatimBiz(q, limit = 10, opts = {}) {
   const bounded = opts.bounded ? '1' : '0';
   const centerBoost = opts.centerBoost ? '&extratags=1' : '';
-  const key = `biz|${q.trim().toLowerCase()}|${limit}|${bounded}|${opts.zoom || 0}`;
+  const viewboxKey = opts.useViewbox && S.map ? mapViewbox() : '';
+  const key = `biz|${q.trim().toLowerCase()}|${limit}|${bounded}|${opts.zoom || 0}|${viewboxKey}`;
   normalizeCache();
   const cached = S.searchCache[key];
   if (cached) return cached.data;
@@ -617,51 +618,26 @@ function addSearchResultAsPoint(lat, lng, name) {
 async function searchBusiness() {
   const name = document.getElementById('bizInput').value.trim();
   const type = document.getElementById('bizType').value;
-  const scope = document.getElementById('bizScope')?.value || 'here';
   const queries = buildBizQueries(name, type);
   if (!queries.length) {
     notify('Escribe un nombre o selecciona un tipo de comercio', 'error');
     return;
   }
 
-  notify('Buscando comercios…');
+  notify('Buscando comercios en la zona visible…');
   let found = [];
 
-  if (scope === 'here') {
-    for (const q of queries) {
-      const r = await nominatimBiz(q, 10, { bounded: true, useViewbox: true, zoom: 18 });
-      found = dedupeBizResults(found.concat(r));
-      if (found.length >= 10) break;
-    }
+  for (const q of queries) {
+    const r = await nominatimBiz(q, 12, { bounded: true, useViewbox: true, zoom: 18 });
+    found = dedupeBizResults(found.concat(r));
+    if (found.length >= 12) break;
+  }
 
-    if (found.length < 6) {
-      for (const q of queries) {
-        const r = await nominatimBiz(q, 10, { bounded: false, useViewbox: false });
-        found = dedupeBizResults(found.concat(r));
-        if (found.length >= 12) break;
-      }
-    }
-
-    if (found.length < 4 && type && BIZ_TYPE_ALIASES[type]) {
-      for (const alias of BIZ_TYPE_ALIASES[type]) {
-        const r = await nominatimBiz(alias, 8, { bounded: true, useViewbox: true });
-        found = dedupeBizResults(found.concat(r));
-        if (found.length >= 12) break;
-      }
-    }
-  } else {
-    for (const q of queries) {
-      const r = await nominatimBiz(q, 12, { bounded: false, useViewbox: false });
+  if (found.length < 5 && type && BIZ_TYPE_ALIASES[type]) {
+    for (const alias of BIZ_TYPE_ALIASES[type]) {
+      const r = await nominatimBiz(alias, 10, { bounded: true, useViewbox: true, zoom: 18 });
       found = dedupeBizResults(found.concat(r));
       if (found.length >= 12) break;
-    }
-
-    if (found.length < 5 && type && BIZ_TYPE_ALIASES[type]) {
-      for (const alias of BIZ_TYPE_ALIASES[type]) {
-        const r = await nominatimBiz(alias, 10, { bounded: false, useViewbox: false });
-        found = dedupeBizResults(found.concat(r));
-        if (found.length >= 12) break;
-      }
     }
   }
 
@@ -669,7 +645,7 @@ async function searchBusiness() {
   const box = document.getElementById('bizResults');
   box.style.display = 'block';
   if (!res.length) {
-    box.innerHTML = '<div class="sres-item">Sin resultados en el área visible del mapa</div>';
+    box.innerHTML = '<div class="sres-item">Sin resultados en la zona visible. Mueve el mapa y vuelve a buscar.</div>';
     return;
   }
 
