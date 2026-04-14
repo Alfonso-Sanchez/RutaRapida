@@ -21,7 +21,8 @@ const S = {
   nid: 1,
   searchCache: {},
   pendingImportRoute: null,
-  sortable: null
+  sortable: null,
+  restoringFromStorage: false
 };
 
 const SEARCH_CACHE_MAX = 100;

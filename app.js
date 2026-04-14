@@ -24,72 +24,129 @@ function notify(msg, type = '') {
 }
 
 const LS_KEY = 'rr2';
+const LS_TRK_KEY = 'rr2_trk';
+const LS_ACTIVE_SESSION_KEY = 'rr2_active_session';
+
+function getTrackingSnapshot() {
+  if (!S.trk.active) return null;
+  return {
+    active: true,
+    startedAt: S.trk.startedAt,
+    currentIdx: S.trk.currentIdx,
+    delay: S.trk.delay || 0,
+    _prevDelay: S.trk._prevDelay || 0,
+    wps: Array.isArray(S.trk.wps) ? S.trk.wps.map(w => ({ ...w })) : []
+  };
+}
+
+function buildStorageSnapshot() {
+  return {
+    v: 3,
+    ts: Date.now(),
+    home: S.home,
+    work: S.work,
+    startPt: S.startPt,
+    endPt: S.endPt,
+    nid: S.nid,
+    schedMode: S.schedMode,
+    sched: {
+      mStart: document.getElementById('mStart')?.value || '08:00',
+      mEnd: document.getElementById('mEnd')?.value || '13:30',
+      aStart: document.getElementById('aStart')?.value || '16:00',
+      aEnd: document.getElementById('aEnd')?.value || '18:30',
+      cStart: document.getElementById('cStart')?.value || '08:00',
+      cHours: document.getElementById('cHours')?.value || '8'
+    },
+    waypoints: S.waypoints.map(w => ({
+      id: w.id,
+      lat: w.lat,
+      lng: w.lng,
+      name: w.name,
+      dwell: w.dwell,
+      priority: normalizePriorityLevel(w.priority),
+      openTime: w.openTime || null,
+      closeTime: w.closeTime || null,
+      openTime2: w.openTime2 || null,
+      closeTime2: w.closeTime2 || null,
+      openingHoursRaw: w.openingHoursRaw || null,
+      desiredArrival: w.desiredArrival || null,
+      plannedArrival: w.plannedArrival || null,
+      plannedDeparture: w.plannedDeparture || null,
+      scheduleConflict: w.scheduleConflict || null
+    })),
+    route: S.route ? {
+      startT: S.route.startT,
+      endT: S.route.endT,
+      totalDist: S.route.totalDist || 0,
+      totalTravel: S.route.totalTravel || 0,
+      totalDwell: S.route.totalDwell || 0,
+      totalWork: S.route.totalWork || 0,
+      mode: S.route.mode || 'auto',
+      startLabel: S.route.startLabel || getBaseLabel(S.startPt),
+      endLabel: S.route.endLabel || getBaseLabel(S.endPt),
+      osrm: S.routeData?.osrm || S.route?.osrm || null
+    } : null,
+    trk: getTrackingSnapshot()
+  };
+}
+
+function writeTrackingStorage() {
+  try {
+    const trk = getTrackingSnapshot();
+    if (trk) localStorage.setItem(LS_TRK_KEY, JSON.stringify(trk));
+    else localStorage.removeItem(LS_TRK_KEY);
+  } catch (e) {
+    console.error('writeTrackingStorage:', e);
+  }
+}
+
+function writeActiveSessionStorage(snapshot) {
+  try {
+    if (snapshot?.trk?.active) localStorage.setItem(LS_ACTIVE_SESSION_KEY, JSON.stringify(snapshot));
+    else localStorage.removeItem(LS_ACTIVE_SESSION_KEY);
+  } catch (e) {
+    console.error('writeActiveSessionStorage:', e);
+  }
+}
+
+function readSessionSnapshot() {
+  let primary = null;
+  try {
+    const raw = localStorage.getItem(LS_KEY) || localStorage.getItem('rr');
+    if (raw) primary = JSON.parse(raw);
+  } catch (e) {
+    console.error('loadStorage parse:', e);
+  }
+
+  let active = null;
+  try {
+    const rawActive = localStorage.getItem(LS_ACTIVE_SESSION_KEY);
+    if (rawActive) active = JSON.parse(rawActive);
+  } catch (e) {
+    console.error('loadActiveSessionStorage parse:', e);
+  }
+
+  if (active?.trk?.active) return active;
+  return primary;
+}
 
 function saveStorage() {
+  if (S.restoringFromStorage) return;
   try {
-    const snap = {
-      v: 3,
-      ts: Date.now(),
-      home: S.home,
-      work: S.work,
-      startPt: S.startPt,
-      endPt: S.endPt,
-      nid: S.nid,
-      schedMode: S.schedMode,
-      sched: {
-        mStart: document.getElementById('mStart')?.value || '08:00',
-        mEnd: document.getElementById('mEnd')?.value || '13:30',
-        aStart: document.getElementById('aStart')?.value || '16:00',
-        aEnd: document.getElementById('aEnd')?.value || '18:30',
-        cStart: document.getElementById('cStart')?.value || '08:00',
-        cHours: document.getElementById('cHours')?.value || '8'
-      },
-      waypoints: S.waypoints.map(w => ({
-        id: w.id,
-        lat: w.lat,
-        lng: w.lng,
-        name: w.name,
-        dwell: w.dwell,
-        priority: normalizePriorityLevel(w.priority),
-        openTime: w.openTime || null,
-        closeTime: w.closeTime || null,
-        openTime2: w.openTime2 || null,
-        closeTime2: w.closeTime2 || null,
-        openingHoursRaw: w.openingHoursRaw || null,
-        desiredArrival: w.desiredArrival || null,
-        plannedArrival: w.plannedArrival || null,
-        plannedDeparture: w.plannedDeparture || null,
-        scheduleConflict: w.scheduleConflict || null
-      })),
-      route: S.route ? {
-        startT: S.route.startT,
-        endT: S.route.endT,
-        totalDist: S.route.totalDist || 0,
-        totalTravel: S.route.totalTravel || 0,
-        totalDwell: S.route.totalDwell || 0,
-        totalWork: S.route.totalWork || 0,
-        mode: S.route.mode || 'auto',
-        startLabel: S.route.startLabel || getBaseLabel(S.startPt),
-        endLabel: S.route.endLabel || getBaseLabel(S.endPt),
-        osrm: S.routeData?.osrm || null
-      } : null,
-      trk: S.trk.active ? {
-        active: true,
-        startedAt: S.trk.startedAt,
-        currentIdx: S.trk.currentIdx,
-        delay: S.trk.delay || 0,
-        _prevDelay: S.trk._prevDelay || 0,
-        wps: S.trk.wps
-      } : null
-    };
+    const snap = buildStorageSnapshot();
 
     localStorage.setItem(LS_KEY, JSON.stringify(snap));
+    writeTrackingStorage();
+    writeActiveSessionStorage(snap);
   } catch (e) {
     console.error('saveStorage:', e);
   }
 }
 
-function saveTrkState() { saveStorage(); }
+function saveTrkState() {
+  writeTrackingStorage();
+  saveStorage();
+}
 
 function persistSessionSafely() {
   try {
@@ -211,14 +268,31 @@ async function ensureRouteVisualization() {
   }
 }
 
+function restoreRouteVisualization() {
+  if (!S.route || !S.waypoints.length || !S.map) return;
+
+  const origin = getBasePoint(S.startPt);
+  const destination = getBasePoint(S.endPt);
+  if (!origin || !destination) return;
+
+  if (S.routeData?.osrm?.geometry?.coordinates?.length) {
+    S._routeDrawErrorShown = false;
+    drawRoute(S.routeData.osrm.geometry);
+    fitMapToActiveRoute();
+    return;
+  }
+
+  const pts = [origin, ...S.waypoints, destination].filter(Boolean);
+  if (pts.length < 2) return;
+  drawLines(pts);
+  fitMapToActiveRoute();
+}
+
 function loadStorage() {
-  let raw = localStorage.getItem(LS_KEY);
-  if (!raw) raw = localStorage.getItem('rr');
-  if (!raw) return;
+  const d = readSessionSnapshot();
+  if (!d) return;
 
-  let d;
-  try { d = JSON.parse(raw); } catch (e) { console.error('loadStorage parse:', e); return; }
-
+  S.restoringFromStorage = true;
   try {
     if (d.home) { S.home = d.home; updateBaseUI('home'); setMk('home', d.home.lat, d.home.lng, '🏠', '#2563eb'); }
     if (d.work) { S.work = d.work; updateBaseUI('work'); setMk('work', d.work.lat, d.work.lng, '💼', '#7c3aed'); }
@@ -271,7 +345,15 @@ function loadStorage() {
     else if (pts.length > 1) S.map.fitBounds(L.latLngBounds(pts.map(p => [p.lat, p.lng])), { padding: [40, 40] });
     else if (pts.length === 1) S.map.setView([pts[0].lat, pts[0].lng], 13);
 
-    const trk = d.trk;
+    let trk = d.trk;
+    if (!trk?.active) {
+      try {
+        const trkRaw = localStorage.getItem(LS_TRK_KEY);
+        if (trkRaw) trk = JSON.parse(trkRaw);
+      } catch (e) {
+        console.error('loadTrackingStorage parse:', e);
+      }
+    }
     if (trk?.active && S.waypoints.length) {
       S.trk.active = true;
       S.trk.startedAt = trk.startedAt || Date.now();
@@ -282,6 +364,7 @@ function loadStorage() {
 
       document.getElementById('trackBtn').innerHTML = '<i class="fas fa-stop" style="color:#ef4444"></i> Parar';
       document.getElementById('trkTabBtn').style.display = '';
+      renderWPs();
       renderTrkPanel();
       showTab('tracking');
 
@@ -291,11 +374,15 @@ function loadStorage() {
       restoreRouteVisualization();
       notify('Seguimiento restaurado ✓', 'success');
     } else if (S.waypoints.length) {
+      writeTrackingStorage();
       restoreRouteVisualization();
       notify(`Sesión restaurada · ${S.waypoints.length} puntos`, 'success');
     }
   } catch (e) {
     console.error('loadStorage apply:', e);
+  } finally {
+    S.restoringFromStorage = false;
+    saveStorage();
   }
 }
 

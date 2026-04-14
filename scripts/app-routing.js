@@ -554,16 +554,133 @@ function renderRoute(r) {
   }).join('');
 }
 
-function drawRoute(geo) {
-  if (S.routeLayer) S.map.removeLayer(S.routeLayer);
-  S.routeLayer = L.geoJSON(geo, { style: { color: '#2563eb', weight: 5, opacity: .72 } }).addTo(S.map);
-  S.map.fitBounds(S.routeLayer.getBounds(), { padding: [20, 20] });
+function clearRouteLayer() {
+  if (S.routeLayer && S.map?.hasLayer(S.routeLayer)) S.map.removeLayer(S.routeLayer);
+  S.routeLayer = null;
+}
+
+function getCompletedLegCount() {
+  if (!S.trk.active || !Array.isArray(S.trk.wps) || !S.trk.wps.length) return 0;
+  const doneCount = S.trk.wps.filter(w => w?.status === 'done').length;
+  const current = S.trk.wps[S.trk.currentIdx];
+  if (current?.status === 'at_client') return Math.min(S.waypoints.length, doneCount + 1);
+  return Math.min(S.waypoints.length, doneCount);
+}
+
+function buildRouteAnchorPoints() {
+  const origin = getBasePoint(S.startPt);
+  const destination = getBasePoint(S.endPt);
+  if (!origin || !destination || !S.waypoints.length) return [];
+  return [origin, ...S.waypoints, destination];
+}
+
+function squaredDistance(aLat, aLng, bLat, bLng) {
+  const dLat = aLat - bLat;
+  const dLng = aLng - bLng;
+  return (dLat * dLat) + (dLng * dLng);
+}
+
+function findNearestCoordIndex(coords, point, startIdx = 0) {
+  let bestIdx = Math.max(0, startIdx);
+  let bestDist = Infinity;
+  for (let i = Math.max(0, startIdx); i < coords.length; i++) {
+    const [lng, lat] = coords[i];
+    const dist = squaredDistance(lat, lng, point.lat, point.lng);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
+function getRouteAnchorCoordIndices(coords, anchors) {
+  const indices = [];
+  let cursor = 0;
+  anchors.forEach(anchor => {
+    cursor = findNearestCoordIndex(coords, anchor, cursor);
+    indices.push(cursor);
+  });
+  return indices;
+}
+
+function toLatLngCoords(coords) {
+  return coords.map(([lng, lat]) => [lat, lng]);
+}
+
+function refreshRouteProgressVisualization() {
+  if (!S.map || !S.route || !S.waypoints.length) return;
+  const anchors = buildRouteAnchorPoints();
+  if (S.routeData?.osrm?.geometry?.coordinates?.length) {
+    drawRoute(S.routeData.osrm.geometry, anchors);
+    return;
+  }
+  if (anchors.length >= 2) drawLines(anchors);
+}
+
+function drawRoute(geo, anchors = buildRouteAnchorPoints()) {
+  clearRouteLayer();
+  const coords = geo?.coordinates;
+  if (!Array.isArray(coords) || coords.length < 2) return;
+
+  const completedLegs = getCompletedLegCount();
+  if (!S.trk.active || !anchors.length || completedLegs <= 0) {
+    S.routeLayer = L.geoJSON(geo, { style: { color: '#2563eb', weight: 5, opacity: .72 } }).addTo(S.map);
+    S.map.fitBounds(S.routeLayer.getBounds(), { padding: [20, 20] });
+    return;
+  }
+
+  const anchorIndices = getRouteAnchorCoordIndices(coords, anchors);
+  const splitIdx = anchorIndices[Math.min(completedLegs, anchorIndices.length - 1)] || 0;
+  const completedCoords = coords.slice(0, splitIdx + 1);
+  const remainingCoords = coords.slice(Math.max(0, splitIdx), coords.length);
+  const layers = [];
+
+  if (completedCoords.length >= 2) {
+    layers.push(L.polyline(toLatLngCoords(completedCoords), {
+      color: '#6b7280',
+      weight: 5,
+      opacity: 0.82
+    }));
+  }
+  if (remainingCoords.length >= 2) {
+    layers.push(L.polyline(toLatLngCoords(remainingCoords), {
+      color: '#2563eb',
+      weight: 5,
+      opacity: 0.72
+    }));
+  }
+
+  S.routeLayer = L.featureGroup(layers).addTo(S.map);
+  if (layers.length) S.map.fitBounds(S.routeLayer.getBounds(), { padding: [20, 20] });
 }
 
 function drawLines(pts) {
-  if (S.routeLayer) S.map.removeLayer(S.routeLayer);
-  S.routeLayer = L.polyline(pts.map(p => [p.lat, p.lng]), { color: '#2563eb', weight: 3, opacity: .6, dashArray: '8,8' }).addTo(S.map);
-  S.map.fitBounds(S.routeLayer.getBounds(), { padding: [20, 20] });
+  clearRouteLayer();
+  const latLngs = pts.map(p => [p.lat, p.lng]);
+  if (latLngs.length < 2) return;
+
+  const completedLegs = getCompletedLegCount();
+  if (!S.trk.active || completedLegs <= 0) {
+    S.routeLayer = L.polyline(latLngs, { color: '#2563eb', weight: 3, opacity: .6, dashArray: '8,8' }).addTo(S.map);
+    S.map.fitBounds(S.routeLayer.getBounds(), { padding: [20, 20] });
+    return;
+  }
+
+  const splitIdx = Math.min(completedLegs, latLngs.length - 1);
+  const completedPts = latLngs.slice(0, splitIdx + 1);
+  const remainingPts = latLngs.slice(Math.max(0, splitIdx), latLngs.length);
+  const layers = [];
+
+  if (completedPts.length >= 2) {
+    layers.push(L.polyline(completedPts, { color: '#6b7280', weight: 4, opacity: 0.8, dashArray: '8,8' }));
+  }
+  if (remainingPts.length >= 2) {
+    layers.push(L.polyline(remainingPts, { color: '#2563eb', weight: 3, opacity: 0.6, dashArray: '8,8' }));
+  }
+
+  S.routeLayer = L.featureGroup(layers).addTo(S.map);
+  if (layers.length) S.map.fitBounds(S.routeLayer.getBounds(), { padding: [20, 20] });
 }
 
 async function recalcTrackingProjection(anchor, remainingWps, opts = {}) {
@@ -632,25 +749,17 @@ function toggleTracking() {
 async function startTracking() {
   if (!S.route) { notify('Calcula la ruta primero', 'error'); return; }
   const { origin, destination, startLabel, endLabel } = getRouteEndpoints();
+  const preservedOsrm = S.routeData?.osrm || S.route?.osrm || null;
   if (!origin || !destination) {
     notify('Revisa Casa y Trabajo antes de iniciar la ruta', 'error');
     showTab('setup');
     return;
   }
 
-  const refreshed = await recalcTrackingProjection(origin, [...S.waypoints], {
-    destination, startLabel, endLabel, startMinOverride: nowMin()
-  });
-  if (refreshed) {
-    S.route = refreshed;
-    S.routeData = { origin, destination, osrm: null, startLabel, endLabel };
-    renderRoute(refreshed);
-    renderWPs();
-  }
-
   S.trk.active = true;
   S.trk.startedAt = Date.now();
   S.trk.delay = 0;
+  S.trk._prevDelay = 0;
   S.trk.currentIdx = 0;
   S.trk.wps = S.waypoints.map(wp => ({
     id: wp.id,
@@ -667,6 +776,21 @@ async function startTracking() {
   saveTrkState();
   saveStorage();
   renderTrkPanel();
+
+  const refreshed = await recalcTrackingProjection(origin, [...S.waypoints], {
+    destination, startLabel, endLabel, startMinOverride: nowMin()
+  });
+  if (refreshed && S.trk.active) {
+    refreshed.osrm = preservedOsrm;
+    S.route = refreshed;
+    S.routeData = { origin, destination, osrm: preservedOsrm, startLabel, endLabel };
+    renderRoute(refreshed);
+    renderWPs();
+    renderTrkPanel();
+    refreshRouteProgressVisualization();
+    saveStorage();
+  }
+
   notify('¡Seguimiento iniciado!', 'success');
 }
 
@@ -679,6 +803,7 @@ function stopTracking() {
   document.getElementById('trkTabBtn').style.display = 'none';
   renderWPs();
   showTab('route');
+  refreshRouteProgressVisualization();
   saveStorage();
   notify('Jornada finalizada');
 }
@@ -711,6 +836,7 @@ async function trkArrived() {
   saveTrkState();
   saveStorage();
   renderTrkPanel();
+  refreshRouteProgressVisualization();
 }
 
 async function trkLeft() {
@@ -747,6 +873,7 @@ async function trkLeft() {
   saveStorage();
   renderTrkPanel();
   renderWPs();
+  refreshRouteProgressVisualization();
 
   if (S.trk.currentIdx >= S.trk.wps.length) notify('🎉 ¡Has completado todas las paradas!', 'success');
 }
@@ -779,6 +906,7 @@ async function trkReopen(idx) {
   S.waypoints.forEach(wp => addWPMarker(wp));
   renderWPs();
   renderTrkPanel();
+  refreshRouteProgressVisualization();
   saveStorage();
   notify('Parada reactivada', 'success');
 }
@@ -852,6 +980,7 @@ async function trkCompleteNow(idx = S.trk.currentIdx) {
   addWPMarker(wp);
   renderWPs();
   renderTrkPanel();
+  refreshRouteProgressVisualization();
   saveStorage();
   notify('Parada cerrada y ruta actualizada', 'success');
 }
@@ -898,18 +1027,29 @@ function renderTrkPanel() {
   const tw = S.trk.wps[S.trk.currentIdx];
   const wp = tw ? S.waypoints.find(w => w.id === tw.id) : null;
   const card = document.getElementById('trkCurrentCard');
+  const finalDestination = S.routeData?.destination || getBasePoint(S.endPt);
+  const finalLabel = S.route?.endLabel || S.routeData?.endLabel || getBaseLabel(S.endPt);
 
   if (!wp) {
     card.style.borderColor = '#16a34a';
-    document.getElementById('trkCurrentLabel').textContent = '✅ JORNADA COMPLETADA';
-    document.getElementById('trkCurrentName').textContent = '¡Todas las paradas visitadas!';
-    document.getElementById('trkCurrentAddr').textContent = `Fin: ${S.route?.endT || ''}`;
+    document.getElementById('trkCurrentLabel').textContent = '🏁 VUELTA A BASE';
+    document.getElementById('trkCurrentName').textContent = `Ir a ${finalLabel}`;
+    document.getElementById('trkCurrentAddr').textContent = finalDestination
+      ? `${finalDestination.lat.toFixed(5)}, ${finalDestination.lng.toFixed(5)}`
+      : `Fin: ${S.route?.endT || ''}`;
+    document.getElementById('trkPlanned').textContent = S.route?.endT || '—';
+    document.getElementById('trkEstimated').textContent = S.route?.endT || '—';
+    document.getElementById('trkDwell').textContent = '0h:00m';
     document.getElementById('trkArrivedBtn').style.display = 'none';
     document.getElementById('trkLeftBtn').style.display = 'none';
     document.getElementById('trkCloseNowBtn').style.display = 'none';
     document.getElementById('trkTimerBlock').style.display = 'none';
-    document.getElementById('trkMapsLink').href = '#';
-    document.getElementById('trkWazeLink').href = '#';
+    document.getElementById('trkMapsLink').href = finalDestination
+      ? `https://www.google.com/maps/dir/?api=1&destination=${finalDestination.lat},${finalDestination.lng}&travelmode=driving`
+      : '#';
+    document.getElementById('trkWazeLink').href = finalDestination
+      ? `https://waze.com/ul?ll=${finalDestination.lat},${finalDestination.lng}&navigate=yes`
+      : '#';
   } else {
     const isAt = tw.status === 'at_client';
     card.style.borderColor = isAt ? '#16a34a' : '#2563eb';
@@ -935,6 +1075,7 @@ function renderTrkPanel() {
   }
 
   renderTrkItinerary();
+  refreshRouteProgressVisualization();
 }
 
 function renderTrkItinerary() {
